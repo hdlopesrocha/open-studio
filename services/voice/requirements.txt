@@ -1,0 +1,28 @@
+# Full voice image: API + Piper + OmniVoice.
+#
+# PyTorch is installed separately in the Dockerfile so the same image can be
+# built for CPU or CUDA (TORCH_INDEX_URL / DEVICE build args). Keep it out of
+# this file to avoid pip resolving a CPU wheel over a CUDA wheel.
+
+# API
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart>=0.0.9
+httpx==0.28.1
+pydantic==2.10.4
+
+# Audio
+numpy==2.2.6
+soundfile==0.13.1
+
+# Piper
+piper-tts==1.8.0
+onnxruntime==1.22.1
+huggingface-hub>=0.27,<2
+
+# OmniVoice (heavy: torch, transformers, torchaudio and the [tn] text
+# normalization extras). The service imports this lazily, so a broken/missing
+# install leaves Piper and the API usable.
+omnivoice[tn]==0.2.1
+peft>=0.20.0
+transformers==5.3.0

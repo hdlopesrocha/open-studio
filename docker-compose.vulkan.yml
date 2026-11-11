@@ -1,0 +1,35 @@
+# AMD / Intel GPU acceleration through Vulkan and /dev/dri. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.vulkan.yml up -d --build
+services:
+  music-engine:
+    build:
+      args:
+        ENABLE_VULKAN: "1"
+    environment:
+      ACESTEP_CPP_DEVICE: Vulkan0
+      ACESTEP_CPP_CLAMP_FP16: "true"
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-105}"
+
+  qvac:
+    environment:
+      QVAC_DEVICE: gpu
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+
+  video-animation:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+
+  video-renderer:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - video

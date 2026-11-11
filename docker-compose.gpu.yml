@@ -1,0 +1,70 @@
+# NVIDIA acceleration override. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# Requires the NVIDIA Container Toolkit on the host.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  voice:
+    build:
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
+        DEVICE: cuda
+    environment:
+      DEVICE: cuda
+      OMNIVOICE_ASR_DEVICE: cuda
+      OMNIVOICE_LOAD_ASR: "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  imagegen:
+    build:
+      args:
+        INSTALL_DIFFUSERS: "1"
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu128
+    environment:
+      TORCH_DEVICE: cuda
+      IMAGEGEN_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  srt:
+    build:
+      args:
+        INSTALL_CUDA: "1"
+    environment:
+      WHISPER_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  qvac:
+    environment:
+      QVAC_DEVICE: gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

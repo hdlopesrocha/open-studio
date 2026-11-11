@@ -1,0 +1,1 @@
+"""Open Studio summarization service."""

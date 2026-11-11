@@ -1,0 +1,695 @@
+name: openstudio
+
+x-common-env: &common-env
+  TZ: ${TZ:-UTC}
+  DATA_ROOT: /data
+  FILES_ROOT: /data/files
+  STATE_ROOT: /data/state
+  CACHE_ROOT: /data/cache
+  MODELS_ROOT: /data/models
+  ARTIFACT_ROOT: /data/artifacts
+  INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token-change-me}
+  JOBHUB_URL: http://jobhub:8000
+  FILES_SERVICE_URL: http://files:8000
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  REQUIRE_INTERNAL_TOKEN: "true"
+  HF_HOME: /data/models/huggingface
+  HF_HUB_CACHE: /data/models/huggingface/hub
+  OLLAMA_URL: http://ollama:11434
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+  COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:8188}
+  ENABLE_DOCS: ${ENABLE_DOCS:-0}
+  HOME: /data/home
+  XDG_CACHE_HOME: /data/home/.cache
+
+x-common-volumes: &common-volumes
+  - ${OPENSTUDIO_DATA_DIR:-./data}/files:/data/files
+  - ${OPENSTUDIO_DATA_DIR:-./data}/state:/data/state
+  - ${OPENSTUDIO_DATA_DIR:-./data}/cache:/data/cache
+  - ${OPENSTUDIO_DATA_DIR:-./data}/models:/data/models
+  - ${OPENSTUDIO_DATA_DIR:-./data}/artifacts:/data/artifacts
+  - ${OPENSTUDIO_DATA_DIR:-./data}/home:/data/home
+
+x-python-service: &python-service
+  restart: unless-stopped
+  networks: [studio]
+  environment: *common-env
+  volumes: *common-volumes
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "3"
+
+services:
+  # ── Shared infrastructure ───────────────────────────────────────────────
+  files:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/files/Dockerfile
+    image: openstudio/files:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-files
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+
+  jobhub:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/jobhub/Dockerfile
+    image: openstudio/jobhub:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-jobhub
+    environment:
+      <<: *common-env
+      JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-86400}
+      MUSIC_CONCURRENCY: ${MUSIC_CONCURRENCY:-1}
+      VIDEO_CONCURRENCY: ${VIDEO_CONCURRENCY:-2}
+      VOICE_CONCURRENCY: ${VOICE_CONCURRENCY:-1}
+      SRT_CONCURRENCY: ${SRT_CONCURRENCY:-1}
+      IMAGEGEN_CONCURRENCY: ${IMAGEGEN_CONCURRENCY:-1}
+      TRANSLATION_CONCURRENCY: ${TRANSLATION_CONCURRENCY:-2}
+      SUMMARY_CONCURRENCY: ${SUMMARY_CONCURRENCY:-1}
+      DOCS_CONCURRENCY: ${DOCS_CONCURRENCY:-2}
+      FFMPEG_CONCURRENCY: ${FFMPEG_CONCURRENCY:-2}
+      YTDLP_CONCURRENCY: ${YTDLP_CONCURRENCY:-2}
+      QVAC_CONCURRENCY: ${QVAC_CONCURRENCY:-1}
+      LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+
+  ollama:
+    profiles: ["services"]
+    image: ollama/ollama:${OLLAMA_VERSION:-latest}
+    container_name: openstudio-ollama
+    restart: unless-stopped
+    networks: [studio]
+    volumes:
+      - ${OPENSTUDIO_DATA_DIR:-./data}/models/ollama:/root/.ollama
+      - ${OPENSTUDIO_DATA_DIR:-./data}/home:/data/home
+    environment:
+      HOME: /data/home
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    # GPU users: use make up-gpu, which adds the NVIDIA device reservation.
+
+  llm:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/llm/Dockerfile
+    image: openstudio/llm:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-llm
+    environment:
+      <<: *common-env
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+      LLM_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-300}
+    depends_on:
+      ollama:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+
+  # ── Music ───────────────────────────────────────────────────────────────
+  music-engine:
+    profiles: ["services"]
+    build:
+      context: .
+      dockerfile: engines/acestep-cpp/Dockerfile
+      args:
+        ENABLE_VULKAN: ${ACESTEP_VULKAN:-0}
+    image: openstudio/music-engine:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-music-engine
+    restart: unless-stopped
+    networks: [studio]
+    user: "${OPENSTUDIO_UID:-1000}:${OPENSTUDIO_GID:-1000}"
+    volumes:
+      - ${OPENSTUDIO_DATA_DIR:-./data}/models:/data/models
+      - ${OPENSTUDIO_DATA_DIR:-./data}/home:/data/home
+    environment:
+      TZ: ${TZ:-UTC}
+      HOME: /data/home
+      ACESTEP_CPP_MODELS_DIR: /data/models/acestep
+      ACESTEP_CPP_PORT: "8085"
+      ACESTEP_CPP_DEVICE: ${ACESTEP_DEVICE:-CPU}
+      ACESTEP_CPP_KEEP_LOADED: ${ACESTEP_KEEP_LOADED:-false}
+      ACESTEP_CPP_DOWNLOAD_MODELS: ${ACESTEP_DOWNLOAD_MODELS:-true}
+      ACESTEP_CPP_LM_SIZE: ${ACESTEP_LM_SIZE:-0.6B}
+      ACESTEP_CPP_QUANT: ${ACESTEP_QUANT:-Q8_0}
+      ACESTEP_CPP_DIT_VARIANT: ${ACESTEP_DIT_VARIANT:-turbo}
+      ACESTEP_CPP_EXTRA_ARGS: ${ACESTEP_EXTRA_ARGS:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8085/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # First start may download several GB of GGUF weights.
+      start_period: 1800s
+
+  music:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/music/Dockerfile
+    image: openstudio/music:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-music
+    environment:
+      <<: *common-env
+      ACESTEP_ENGINE_URL: http://music-engine:8085
+    depends_on:
+      jobhub:
+        condition: service_healthy
+      music-engine:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  # ── Video pipeline ──────────────────────────────────────────────────────
+  video-audio:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/video-audio/Dockerfile
+    image: openstudio/video-audio:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-video-audio
+    environment:
+      <<: *common-env
+      PROJECTS_ROOT: /data/files/video/projects
+      CACHE_ROOT: /data/cache/video
+      CONFIG_ROOT: /data/state/video
+      NUMBA_CACHE_DIR: /tmp/numba-cache
+
+  video-lyrics:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/video-lyrics/Dockerfile
+    image: openstudio/video-lyrics:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-video-lyrics
+    environment:
+      <<: *common-env
+      PROJECTS_ROOT: /data/files/video/projects
+      CONFIG_ROOT: /data/state/video
+
+  video-planner:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/video-planner/Dockerfile
+    image: openstudio/video-planner:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-video-planner
+    environment:
+      <<: *common-env
+      PROJECTS_ROOT: /data/files/video/projects
+      CONFIG_ROOT: /data/state/video
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  video-animation:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/video-animation/Dockerfile
+    image: openstudio/video-animation:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-video-animation
+    environment:
+      <<: *common-env
+      PROJECTS_ROOT: /data/files/video/projects
+      CACHE_ROOT: /data/cache/video
+      CONFIG_ROOT: /data/state/video
+      COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:8188}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    shm_size: "1gb"
+
+  video-renderer:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/video-renderer/Dockerfile
+    image: openstudio/video-renderer:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-video-renderer
+    environment:
+      <<: *common-env
+      PROJECTS_ROOT: /data/files/video/projects
+      CACHE_ROOT: /data/cache/video
+      CONFIG_ROOT: /data/state/video
+      FONTS_DIR: /usr/share/fonts/truetype
+    shm_size: "1gb"
+
+  video:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/video/Dockerfile
+    image: openstudio/video:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-video
+    environment:
+      <<: *common-env
+      PROJECTS_ROOT: /data/files/video/projects
+      EXPORTS_ROOT: /data/files/video/exports
+      CACHE_ROOT: /data/cache/video
+      CONFIG_ROOT: /data/state/video
+      VIDEO_AUDIO_URL: http://video-audio:8000
+      VIDEO_LYRICS_URL: http://video-lyrics:8000
+      VIDEO_PLANNER_URL: http://video-planner:8000
+      VIDEO_ANIMATION_URL: http://video-animation:8000
+      VIDEO_RENDERER_URL: http://video-renderer:8000
+      IMAGES_SERVICE_URL: http://imagegen:8000/internal/video
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      VIDEO_MAX_CONCURRENT_JOBS: ${VIDEO_MAX_CONCURRENT_JOBS:-2}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      jobhub:
+        condition: service_healthy
+      video-audio:
+        condition: service_started
+      video-lyrics:
+        condition: service_started
+      video-planner:
+        condition: service_started
+      video-animation:
+        condition: service_started
+      video-renderer:
+        condition: service_started
+      imagegen:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 25s
+
+  # ── Voice / TTS (all inside Docker) ─────────────────────────────────────
+  voice:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/voice/Dockerfile
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+        TORCH_VERSION: ${TORCH_VERSION:-2.8.0}
+        DEVICE: ${VOICE_DEVICE:-cpu}
+    image: openstudio/voice:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-voice
+    environment:
+      <<: *common-env
+      DEVICE: ${VOICE_DEVICE:-cpu}
+      OMNIVOICE_ENABLED: "true"
+      OMNIVOICE_MODEL: ${OMNIVOICE_MODEL:-k2-fsa/OmniVoice}
+      OMNIVOICE_ASR_MODEL: ${OMNIVOICE_ASR_MODEL:-openai/whisper-large-v3-turbo}
+      OMNIVOICE_LOAD_ASR: ${OMNIVOICE_LOAD_ASR:-0}
+      DEFAULT_PIPER_VOICE: ${DEFAULT_PIPER_VOICE:-pt-PT-tugao}
+      VOICE_MAX_UPLOAD_MB: ${VOICE_MAX_UPLOAD_MB:-50}
+    shm_size: "1gb"
+    depends_on:
+      jobhub:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ── Subtitles (Whisper + lyric alignment) ───────────────────────────────
+  srt:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/srt/Dockerfile
+      args:
+        INSTALL_CUDA: ${SRT_INSTALL_CUDA:-0}
+    image: openstudio/srt:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-srt
+    environment:
+      <<: *common-env
+      WHISPER_CACHE_DIR: /data/models/whisper
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
+      TRANSLATION_URL: http://translation:8000
+    depends_on:
+      jobhub:
+        condition: service_healthy
+      translation:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 25s
+
+  # ── Picture generation ──────────────────────────────────────────────────
+  imagegen:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/imagegen/Dockerfile
+      args:
+        INSTALL_DIFFUSERS: ${IMAGEGEN_INSTALL_DIFFUSERS:-1}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    image: openstudio/imagegen:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-imagegen
+    environment:
+      <<: *common-env
+      IMAGEGEN_MODELS_DIR: /data/models/images
+      VIDEO_PROJECTS_ROOT: /data/files/video/projects
+      COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:8188}
+      COMFYUI_WORKFLOW_PATH: ${COMFYUI_IMAGE_WORKFLOW:-}
+      QVAC_URL: http://qvac:8000
+      IMAGEGEN_DEFAULT_PROVIDER: ${IMAGEGEN_DEFAULT_PROVIDER:-auto}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      jobhub:
+        condition: service_healthy
+    shm_size: "2gb"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 25s
+      timeout: 8s
+      retries: 8
+      start_period: 30s
+
+  # ── Text / document services ────────────────────────────────────────────
+  translation:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/translation/Dockerfile
+    image: openstudio/translation:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-translation
+    environment:
+      <<: *common-env
+      OMP_NUM_THREADS: ${CPU_THREADS:-4}
+      MODEL_IDLE_UNLOAD_SECONDS: ${MODEL_IDLE_UNLOAD_SECONDS:-900}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
+
+  summary:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/summary/Dockerfile
+    image: openstudio/summary:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-summary
+    environment:
+      <<: *common-env
+      OMP_NUM_THREADS: ${CPU_THREADS:-4}
+      MODEL_IDLE_UNLOAD_SECONDS: ${MODEL_IDLE_UNLOAD_SECONDS:-900}
+      TRANSLATION_URL: http://translation:8000
+    depends_on:
+      translation:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
+
+  pdf:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/pdf/Dockerfile
+    image: openstudio/pdf:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-pdf
+    environment:
+      <<: *common-env
+      OMP_NUM_THREADS: ${CPU_THREADS:-4}
+      PDF_OCR_LANGUAGES: ${PDF_OCR_LANGUAGES:-eng+por}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
+
+  docs:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/docs/Dockerfile
+    image: openstudio/docs:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-docs
+    environment:
+      <<: *common-env
+      PDF_URL: http://pdf:8000
+      TRANSLATION_URL: http://translation:8000
+      SUMMARY_URL: http://summary:8000
+      VOICE_URL: http://voice:8000
+      FFMPEG_URL: http://ffmpeg:8000
+      FILES_URL: http://files:8000
+      DOCS_FFMPEG_FINALIZE_PATH: /internal/ffmpeg/finalize
+      GATEWAY_MAX_TEXT_CHARS: ${GATEWAY_MAX_TEXT_CHARS:-500000}
+    depends_on:
+      jobhub:
+        condition: service_healthy
+      pdf:
+        condition: service_started
+      translation:
+        condition: service_started
+      summary:
+        condition: service_started
+      voice:
+        condition: service_started
+      ffmpeg:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
+
+  # ── Media tools ─────────────────────────────────────────────────────────
+  ffmpeg:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/ffmpeg/Dockerfile
+    image: openstudio/ffmpeg:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-ffmpeg
+    environment:
+      <<: *common-env
+    depends_on:
+      jobhub:
+        condition: service_healthy
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  ytdlp:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/ytdlp/Dockerfile
+    image: openstudio/ytdlp:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-ytdlp
+    environment:
+      <<: *common-env
+    depends_on:
+      jobhub:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  # ── QVAC (Tether local AI SDK, Node) ────────────────────────────────────
+  qvac:
+    profiles: ["services"]
+    build:
+      context: .
+      dockerfile: services/qvac/Dockerfile
+    image: openstudio/qvac:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-qvac
+    restart: unless-stopped
+    networks: [studio]
+    environment:
+      <<: *common-env
+      PORT: "8000"
+      QVAC_DEVICE: ${QVAC_DEVICE:-cpu}
+      QVAC_MOCK: ${QVAC_MOCK:-0}
+      QVAC_MODELS_DIR: /data/models/qvac
+    volumes: *common-volumes
+    depends_on:
+      jobhub:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 25s
+      timeout: 8s
+      retries: 8
+      start_period: 30s
+
+  # ── Service manager (always on, controls optional services) ─────────────
+  admin:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/admin/Dockerfile
+    image: openstudio/admin:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-admin
+    environment:
+      <<: *common-env
+      OPENSTUDIO_PROJECT_DIR: /project
+      OPENSTUDIO_DATA_DIR: ${OPENSTUDIO_DATA_DIR:-./data}
+      OPENSTUDIO_REPO_DIR: ${OPENSTUDIO_REPO_DIR:-.}
+      COMPOSE_OVERRIDES: ${COMPOSE_OVERRIDES:-}
+      TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+      VOICE_DEVICE: ${VOICE_DEVICE:-cpu}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
+      SRT_INSTALL_CUDA: ${SRT_INSTALL_CUDA:-0}
+      QVAC_DEVICE: ${QVAC_DEVICE:-cpu}
+      ACESTEP_VULKAN: ${ACESTEP_VULKAN:-0}
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${OPENSTUDIO_REPO_DIR:-.}:/project:ro
+      - ${OPENSTUDIO_DATA_DIR:-./data}/home:/data/home
+      - ${OPENSTUDIO_DATA_DIR:-./data}/files:/data/files
+      - ${OPENSTUDIO_DATA_DIR:-./data}/state:/data/state
+    depends_on:
+      jobhub:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  # ── Public API gateway and auth ─────────────────────────────────────────
+  gateway:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    image: openstudio/gateway:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-gateway
+    environment:
+      <<: *common-env
+      FILES_URL: http://files:8000
+      JOBHUB_URL: http://jobhub:8000
+      ADMIN_URL: http://admin:8000
+      MUSIC_URL: http://music:8000
+      VIDEO_URL: http://video:8000
+      VOICE_URL: http://voice:8000
+      SRT_URL: http://srt:8000
+      IMAGEGEN_URL: http://imagegen:8000
+      DOCS_URL: http://docs:8000
+      TRANSLATION_URL: http://translation:8000
+      SUMMARY_URL: http://summary:8000
+      PDF_URL: http://pdf:8000
+      FFMPEG_URL: http://ffmpeg:8000
+      YTDLP_URL: http://ytdlp:8000
+      QVAC_URL: http://qvac:8000
+      LLM_URL: http://llm:8000
+      SESSION_COOKIE: ${SESSION_COOKIE:-os_session}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      SESSION_DAYS: ${SESSION_DAYS:-30}
+      MIN_PASSWORD_LENGTH: ${MIN_PASSWORD_LENGTH:-8}
+      LOGIN_ATTEMPTS_PER_MINUTE: ${LOGIN_ATTEMPTS_PER_MINUTE:-8}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8090,http://127.0.0.1:8090}
+      ENABLE_DOCS: ${ENABLE_DOCS:-0}
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8091}:8000"
+    depends_on:
+      files:
+        condition: service_healthy
+      jobhub:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  # ── Unified Vue app ─────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: /api
+    image: openstudio/frontend:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-frontend
+    restart: unless-stopped
+    networks: [studio]
+    environment:
+      HOME: /data/home
+    volumes:
+      - ${OPENSTUDIO_DATA_DIR:-./data}/home:/data/home
+    ports:
+      - "${OPENSTUDIO_PORT:-8090}:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+
+networks:
+  studio:
+    name: openstudio

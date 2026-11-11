@@ -1,0 +1,15 @@
+# Runtime data (bind-mounted into every container)
+data/
+.env
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+node_modules/
+frontend/dist/
+frontend/node_modules/
+.DS_Store
+*.swp
+docs/screenshots/*.tmp

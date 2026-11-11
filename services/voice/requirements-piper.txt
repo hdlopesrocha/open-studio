@@ -1,0 +1,17 @@
+# Lightweight image variant without the OmniVoice/torch stack.
+#
+# Use this instead of requirements.txt when building a Piper-only deployment:
+# the service detects the missing omnivoice package at runtime, reports
+# status=unavailable, and keeps Piper TTS, history and the API fully usable.
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart>=0.0.9
+httpx==0.28.1
+pydantic==2.10.4
+
+numpy==2.2.6
+soundfile==0.13.1
+piper-tts==1.8.0
+onnxruntime==1.22.1
+huggingface-hub>=0.27,<2
