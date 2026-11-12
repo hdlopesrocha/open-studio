@@ -291,6 +291,8 @@ const sceneTransitionBeats = ref(16);
 const sceneMasterBpm = ref(0);
 const sceneKeepOrder = ref(true);
 const sceneUseSections = ref(true);
+const sceneSegments = ref(6);
+const sceneDurationMinutes = ref(6);
 const sceneSaving = ref(false);
 const mixRendering = ref(false);
 
@@ -968,6 +970,8 @@ async function generateScene() {
       transition_beats: sceneTransitionBeats.value,
       keep_order: sceneKeepOrder.value,
       use_sections: sceneUseSections.value,
+      segments: Math.max(1, Math.min(64, Number(sceneSegments.value) || 1)),
+      target_duration: Math.max(10, Number(sceneDurationMinutes.value || 6) * 60),
       track_ids: selectedMixTrackIds.value,
     });
     activeMix.value = response.mix;
@@ -1508,6 +1512,8 @@ onBeforeUnmount(() => {
               <div class="row" style="gap: 10px; align-items: flex-end">
                 <label class="field" style="width: 150px"><span class="label">Master BPM (0 auto)</span><input v-model.number="sceneMasterBpm" type="number" min="0" max="200" class="input input-sm" /></label>
                 <label class="field" style="width: 150px"><span class="label">Transition beats</span><input v-model.number="sceneTransitionBeats" type="number" min="4" max="64" class="input input-sm" /></label>
+                <label class="field" style="width: 145px"><span class="label">AI segments</span><input v-model.number="sceneSegments" type="number" min="1" max="64" class="input input-sm" /></label>
+                <label class="field" style="width: 160px"><span class="label">Target duration (min)</span><input v-model.number="sceneDurationMinutes" type="number" min="0.25" max="180" step="0.25" class="input input-sm" /></label>
                 <label class="row small muted" style="gap: 6px"><input v-model="sceneKeepOrder" type="checkbox" /> Keep order</label>
                 <label class="row small muted" style="gap: 6px"><input v-model="sceneUseSections" type="checkbox" /> Mix multiple sections</label>
                 <button class="btn btn-primary" :disabled="sceneLoading || !selectedMixTrackIds.length" @click="generateScene">

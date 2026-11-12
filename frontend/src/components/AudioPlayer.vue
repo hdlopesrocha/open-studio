@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Download, Pause, Play, Volume2 } from "lucide-vue-next";
 import { downloadUrl, fileUrl, formatDuration } from "@/lib/api";
 import { DEMO } from "@/lib/types";
+import { useAudioThemeStore } from "@/stores/audioTheme";
 
 const props = withDefaults(
   defineProps<{
@@ -23,6 +24,13 @@ const emit = defineEmits<{
   pause: [];
   ended: [];
 }>();
+
+const theme = useAudioThemeStore();
+const playerId = `audio-${Math.random().toString(36).slice(2)}`;
+let analysisCtx: AudioContext | null = null;
+let analyser: AnalyserNode | null = null;
+let mediaSource: MediaElementAudioSourceNode | null = null;
+let analysisFrame = 0;
 
 const audio = ref<HTMLAudioElement | null>(null);
 const peaks = ref<number[]>([]);
@@ -163,18 +171,74 @@ function refresh() {
 
 defineExpose({ seekTo, pause });
 
+function bandAverage(data: Uint8Array, sampleRate: number, low: number, high: number): number {
+  const nyquist = sampleRate / 2;
+  const width = nyquist / Math.max(1, data.length);
+  const first = Math.max(0, Math.floor(low / width));
+  const last = Math.min(data.length - 1, Math.ceil(high / width));
+  if (last < first) return 0;
+  let sum = 0;
+  for (let index = first; index <= last; index += 1) sum += data[index];
+  return Math.min(1, (sum / (last - first + 1) / 255) * 1.5);
+}
+
+function analyse() {
+  if (!analyser || !analysisCtx) return;
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(data);
+  const sampleRate = analysisCtx.sampleRate;
+  const bass = bandAverage(data, sampleRate, 20, 160);
+  const drums = Math.max(bass * 0.72, bandAverage(data, sampleRate, 45, 220));
+  const snare = Math.max(bandAverage(data, sampleRate, 150, 450) * 0.9, bandAverage(data, sampleRate, 1200, 4200) * 0.7);
+  const voice = bandAverage(data, sampleRate, 260, 3200);
+  const air = bandAverage(data, sampleRate, 6000, 12000);
+  theme.update(playerId, { bass, drums, snare, voice, air });
+  analysisFrame = window.requestAnimationFrame(analyse);
+}
+
+async function startAnalysis() {
+  if (!audio.value || DEMO) return;
+  try {
+    analysisCtx = analysisCtx || new AudioContext();
+    if (!mediaSource) {
+      analyser = analysisCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.78;
+      mediaSource = analysisCtx.createMediaElementSource(audio.value);
+      mediaSource.connect(analyser);
+      analyser.connect(analysisCtx.destination);
+    }
+    await analysisCtx.resume();
+    theme.begin(playerId);
+    if (!analysisFrame) analysisFrame = window.requestAnimationFrame(analyse);
+  } catch {
+    // Some browsers disallow MediaElementSource on hidden/CORS audio. Playback
+    // and seeking still work; only the reactive palette is skipped.
+    theme.reset(playerId);
+  }
+}
+
+function stopAnalysis() {
+  if (analysisFrame) window.cancelAnimationFrame(analysisFrame);
+  analysisFrame = 0;
+  theme.reset(playerId);
+}
+
 function onPlay() {
   playing.value = true;
+  void startAnalysis();
   emit("play");
 }
 
 function onPause() {
   playing.value = false;
+  stopAnalysis();
   emit("pause");
 }
 
 function onEnded() {
   playing.value = false;
+  stopAnalysis();
   emit("ended");
 }
 
@@ -186,7 +250,13 @@ onMounted(() => {
   seedWave();
   decode();
 });
-onBeforeUnmount(() => ctx?.close());
+onBeforeUnmount(() => {
+  stopAnalysis();
+  ctx?.close();
+  analysisCtx?.close().catch(() => {});
+  mediaSource?.disconnect();
+  analyser?.disconnect();
+});
 
 watch(resolved, () => decode());
 watch(() => props.waveform, () => applyWaveform());

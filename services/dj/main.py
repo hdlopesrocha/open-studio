@@ -720,6 +720,8 @@ async def create_scene(mix_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         seed=int(payload["seed"]) if payload.get("seed") not in (None, "") else None,
         keep_order=bool(payload.get("keep_order", True)),
         use_sections=bool(payload.get("use_sections", True)),
+        segments=int(payload["segments"]) if payload.get("segments") not in (None, "") else None,
+        target_duration=float(payload["target_duration"]) if payload.get("target_duration") not in (None, "") else None,
     )
     scene["created_at"] = utc_now()
     scene["title"] = row.get("title") or "Untitled mix"

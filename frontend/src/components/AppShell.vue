@@ -82,6 +82,7 @@ async function logout() {
 
 <template>
   <div class="app-shell">
+    <div class="audio-atmosphere" aria-hidden="true" />
     <div class="app-main">
       <header class="topbar">
         <RouterLink to="/" class="brand">

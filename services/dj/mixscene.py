@@ -160,6 +160,8 @@ def plan_scene(
     seed: int | None = None,
     keep_order: bool = True,
     use_sections: bool = True,
+    segments: int | None = None,
+    target_duration: float | None = None,
 ) -> dict[str, Any]:
     if not tracks:
         raise ValueError("Add at least one analysed track before creating a mix scene.")
@@ -176,7 +178,8 @@ def plan_scene(
     profile = _prompt_profile(prompt)
     entries: list[dict[str, Any]] = []
     notes: list[str] = []
-    max_scene_entries = len(usable) * (2 if len(usable) <= 8 else 1)
+    default_segments = len(usable) * (2 if len(usable) <= 8 else 1)
+    max_scene_entries = max(1, min(64, int(segments))) if segments is not None else default_segments
     allow_secondaries = len(usable) <= 8
     for index, track in enumerate(usable):
         duration = float(track.get("duration") or 0)
@@ -245,6 +248,14 @@ def plan_scene(
                     "transition": {},
                 }
             )
+    if target_duration and target_duration > 0 and entries:
+        raw_total = sum(max(0.1, float(entry["out"]) - float(entry["in"])) for entry in entries)
+        if raw_total > float(target_duration):
+            ratio = max(0.02, float(target_duration) / raw_total)
+            for entry in entries:
+                clip = max(0.1, float(entry["out"]) - float(entry["in"]))
+                entry["out"] = round(float(entry["in"]) + max(4.0, clip * ratio), 3)
+
     for index, entry in enumerate(entries):
         nxt = entries[index + 1] if index + 1 < len(entries) else None
         clip_duration = max(0.1, float(entry["out"]) - float(entry["in"]))
@@ -333,6 +344,8 @@ def plan_scene(
     if not notes:
         notes.append("A single-track scene: fade in, ride the energy, fade out.")
     notes.append(f"Master tempo {target_bpm:.1f} BPM · {len(entries)} segments · {total_duration:.1f}s")
+    if target_duration and target_duration > 0:
+        notes.append(f"Target duration {float(target_duration):.0f}s")
     return {
         "source": "dj-ai-sections" if use_sections else "dj-ai",
         "prompt": prompt,
