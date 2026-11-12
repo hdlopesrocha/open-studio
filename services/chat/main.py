@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 
 from openstudio_common import INTERNAL_TOKEN, STATE_ROOT, create_service_app, env, service_url, utc_now
 
+from .context import APP_CONTEXT
+
 log = logging.getLogger("chat")
 
 VERSION = "1.0.0"
@@ -25,10 +27,8 @@ DEFAULT_MODEL = env("CHAT_MODEL", env("LLM_MODEL", "llama3.2:3b"))
 DEFAULT_SYSTEM_PROMPT = env(
     "CHAT_SYSTEM_PROMPT",
     "You are Open Studio's local AI assistant. Be clear, practical and concise. "
-    "You can help with music, audio, video, voice, images, documents, translation, "
-    "subtitles, FFmpeg, yt-dlp and local AI workflows. Never claim to have run a "
-    "tool unless the user provided the result or you were told it ran.",
-)
+    "Use the application context below to help the user navigate and operate this studio.",
+).strip() + "\n\n" + APP_CONTEXT
 CONTEXT_MESSAGES = int(env("CHAT_CONTEXT_MESSAGES", "40"))
 CONTEXT_CHARS = int(env("CHAT_CONTEXT_CHARS", "24000"))
 DB_PATH = Path(env("CHAT_DB_PATH", str(STATE_ROOT / "chat.db")))
@@ -294,6 +294,15 @@ def _context(session: dict[str, Any], history: list[dict[str, Any]]) -> list[dic
         total -= len(str(removed.get("content") or ""))
     messages.extend({"role": item["role"], "content": item["content"]} for item in selected)
     return messages
+
+
+@router.get("/context")
+async def chat_context() -> dict[str, Any]:
+    return {
+        "app": "Open Studio",
+        "context": APP_CONTEXT,
+        "pages": ["/chat", "/music", "/video", "/voice", "/images", "/documents", "/ffmpeg", "/ytdlp", "/files", "/jobs", "/settings"],
+    }
 
 
 @router.get("/health")

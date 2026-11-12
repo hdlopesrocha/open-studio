@@ -98,3 +98,14 @@ def test_chat_llm_failure_and_missing_session(tmp_path, monkeypatch):
 
     missing = client.get("/api/chat/sessions/nope", headers=headers)
     assert missing.status_code == 404
+
+
+def test_chat_context_describes_open_studio(tmp_path, monkeypatch):
+    module = _load_chat(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    response = client.get("/api/chat/context", headers=_headers(module))
+    assert response.status_code == 200
+    payload = response.json()
+    assert "Open Studio" in payload["app"]
+    assert "Settings" in payload["context"]
+    assert "/music" in payload["pages"]
