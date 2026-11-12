@@ -88,6 +88,10 @@ export const useJobsStore = defineStore("jobs", {
       source.addEventListener("job.updated", handle as any);
       source.onopen = () => {
         this.connected = true;
+        // The hub may have restarted while a job was running (for example
+        // while recreating a container). Resync so interrupted or removed
+        // jobs do not stay frozen in the active list forever.
+        void this.refresh();
       };
       source.onerror = () => {
         this.connected = false;

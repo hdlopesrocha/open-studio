@@ -100,7 +100,12 @@ onMounted(async () => {
 watch(
   () => (activeJob.value ? `${activeJob.value.status}:${activeJob.value.progress}` : ""),
   (next, previous) => {
-    if (!next || next === previous) return;
+    if (!next) {
+      // The active job disappeared (hub restart or history refresh).
+      busyService.value = "";
+      return;
+    }
+    if (next === previous) return;
     if (next.startsWith("completed") || next.startsWith("failed") || next.startsWith("canceled")) {
       window.setTimeout(() => {
         load();
