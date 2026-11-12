@@ -205,11 +205,12 @@ make up
 
 That single command:
 
-1. creates `./data/{files,state,cache,models,artifacts,home}`;
+1. creates `./data/{files,state,cache,models,artifacts,home}`, seeding it from
+   `initial_data/` on the first run;
 2. copies `.env.example` to `.env`, generates a random `INTERNAL_TOKEN`, and
    records absolute shared-folder paths for the on-demand service manager;
-3. builds and starts only the **always-on core**: `files`, `jobhub`, `admin`,
-   `gateway` and the Vue frontend.
+3. builds any missing core images and starts only the **always-on core**:
+   `files`, `jobhub`, `admin`, `gateway` and the Vue frontend.
 
 Open **http://localhost:8090**.
 
@@ -226,8 +227,8 @@ Open **http://localhost:8090**.
 | Default | Behavior |
 |---|---|
 | **Core only** | `gateway`, `admin`, `files`, `jobhub`, `frontend` are always on. |
-| **Disabled by default** | Music, video, voice, subtitles, images, documents, text, FFmpeg, yt-dlp, QVAC, LLM and Ollama. Their Docker profiles are not active, so `make up` does **not** build their images. |
-| **Enable** | Settings → Services → **Enable**. The admin service runs `docker compose --profile services up -d --build <service>`; first enable builds the image, later enables reuse it. |
+| **Disabled by default** | Music, DJ, video, voice, subtitles, images, documents, text, FFmpeg, yt-dlp, QVAC, LLM and Ollama. Their Docker profiles are not active, so `make up` does **not** build their images. |
+| **Enable** | Settings → Services → **Enable**. The admin service runs `docker compose --profile services up -d --no-deps <service>` (plus its optional dependencies); first enable builds the image, later enables reuse it. Core containers such as the job hub are never recreated by this command. |
 | **Disable** | Stops and removes that container. Images stay cached on disk; the service can be re-enabled quickly. |
 | **Dependencies** | Enabling a service starts its required helper services (for example Music starts `music-engine`, Video starts the video helpers + `imagegen`, Documents starts `voice`/`pdf`/`translation`/`summary`/`ffmpeg`). |
 | **Health** | Every service shows running/stopped/healthy/unhealthy status in Settings → Services and in `/api/status`. |
@@ -238,15 +239,76 @@ The service manager is reached through the authenticated gateway at
 `/api/admin/services`; it uses the repository and Compose file mounted read-only
 inside the container and builds into the host Docker daemon.
 
-### Download models (recommended once)
+### DJ Studio
+
+Enable **DJ Studio** in Settings → Services, then open `/dj`. It is a
+self-contained crate-digging and mix workspace:
+
+- **Library** — upload WAV/MP3/FLAC/M4A/OGG/OPUS files; analysis extracts BPM,
+  musical key + Camelot code, style confidence, mood, energy, danceability,
+  beat grid, waveform and structural scenes. Scene boundaries are detected on
+  bar/downbeat boundaries from MFCC, chroma, spectral and energy novelty, then
+  labelled Intro, Build, Groove/Verse, Drop/Chorus, Breakdown and Outro. The
+  scene strip under each track shows the extracted structure.
+- **Style models** — train one model per style from analysed tracks. A model
+  learns the tempo distribution, key probabilities, spectral balance, swing and
+  average energy arc; generation uses those learned values instead of a fixed
+  preset.
+- **AI arrangements** — the local planner (or the optional `llm` service when
+  enabled) proposes intro/build/drop/breakdown/outro sections. Edit every
+  section's bars, energy, mood, layers and instruction, then render a
+  multi-stem track with drums, sub bass, harmony, arps and FX.
+- **Mix Lab** — select analysed records, and the scene planner beat-matches
+  them to a master tempo, chooses in/out points and can mix multiple detected
+  sections from each track (intro → drop → breakdown → outro). It orders
+  transitions (crossfade, filter sweep, bass swap, echo-out, cut) and applies
+  mood effects. The renderer produces a complete mix WAV; effects include
+  filter sweeps, reverb, tempo delay, drive, bitcrush, chorus, gate, stutter
+  and tape stop. Click any scene in the Library strip to seek the preview
+  player to that section.
+
+DJ state is stored in `data/state/dj.db`; uploads and renders live under
+`data/files/dj/`. The service is CPU-friendly and does not require the
+ACE-Step engine.
+
+### Persistent state
+
+Everything that should survive a restart lives in the single `./data` tree:
+
+- `files/` — uploads, generated audio/video/images, trained voices and shared outputs.
+- `models/` — Ollama, ACE-Step, Whisper, translation, summary, OmniVoice, Diffusers and QVAC weights.
+- `state/` — SQLite databases for auth, jobs, music, DJ, voice and service state.
+- `home/`, `cache/`, `artifacts/`, `exports/` — service caches and outputs.
+
+Docker images and build caches are also reused. `make up` restarts with the
+existing images and data; use `make rebuild` only after changing source code.
+`make reset` is the only command that wipes runtime data.
+
+`initial_data/` is the seed state for a new installation. `make init` copies it
+into `./data` only when `./data` is empty, then writes `data/.initialized` so a
+restart never overwrites live state. Put prepared files, generated media,
+trained voice profiles or model files there if you want them available on first
+boot.
+
+### Install models
+
+Open **Settings → Models & commands → Models** to browse and install every model
+pack. Each download is a normal job with progress, cancellation and retry in
+Jobs. The catalog covers:
+
+- Ollama LLMs
+- ACE-Step GGUF models
+- Whisper large-v3 and small
+- OPUS-MT/NLLB translation and T5 summaries
+- OmniVoice
+- Piper voices
+- SD Turbo, SD 1.5, SDXL, SDXL Turbo and FLUX.1 Schnell
+- QVAC SD 2.1
+
+Installed packs expose a **Re-check** action that queues the same download job and verifies files. Individual Piper voices are available on the Voice page. The same downloads are available from the CLI:
 
 ```bash
 make models
-```
-
-This downloads the LLM, ACE-Step GGUF set, Whisper, OPUS-MT/T5 and Piper voices. QVAC and Diffusers checkpoints download on first use from their pages. To fetch only one family:
-
-```bash
 make models-llm
 make models-music
 make models-whisper
@@ -456,7 +518,7 @@ curl -H 'Authorization: Bearer osk_...' -H 'Content-Type: application/json' \
 All TTS runs in Docker. One service exposes two engines:
 
 - **OmniVoice** — zero-shot cloning, design and auto voice, 646 languages, Whisper ASR.
-- **Piper** — five fast built-in ONNX voices for Portuguese/English.
+- **Piper** — fast built-in ONNX voices with male and female options for US/UK English, French, German, Spanish and Portuguese.
 
 **Concrete example — clone a voice and narrate a chapter**
 
@@ -466,7 +528,7 @@ All TTS runs in Docker. One service exposes two engines:
 4. **Studio** → select `Helena — close`, paste the chapter, choose language, speed `1.0`, quality `32`, format `MP3`.
 5. Optional: **Advanced** → steps, guidance, t-shift, denoise, seed, text normalisation, preprocess/postprocess.
 6. **Generate speech**. Play the waveform, check RTF, download, or open **History**.
-7. For a quick built-in voice, choose engine `Piper`, mode `Auto`, pick e.g. `pt-PT-tugao`; no training required.
+7. For a quick built-in voice, open **Built-in**, download a male or female voice in US/UK English, French, German, Spanish or Portuguese, then choose engine `Piper`, mode `Auto`. Voice downloads are normal jobs with progress in Jobs.
 8. **Design** creates a voice from attributes: `female, low pitch, british accent, whisper` → generate or batch.
 9. **Batch** supports blank-line or one-per-line splitting, up to 50 items, and a ZIP with per-item metadata.
 
@@ -814,6 +876,7 @@ data/
 │   ├── music/              # projects/<id>/songs..., takes, exports
 │   ├── video/projects/     # input, analysis, planning, assets, output
 │   ├── voices/             # trained voice profiles: <id>/reference.wav, prompt.pt, meta.json
+│   ├── voices/piper/       # downloaded Piper ONNX voices, one folder per voice
 │   ├── voice/              # TTS outputs, uploads and transient audio
 │   ├── images/             # <job-id>/ images, thumbnails, sidecars
 │   ├── documents/          # <job-id>/ text, audio, srt, manifest, zip
@@ -909,6 +972,7 @@ curl -OJ -H 'Authorization: Bearer osk_...' \
 | `/api/files/*` | Shared files | `GET /api/files/list` |
 | `/api/admin/*` | Service manager | `GET /api/admin/services`, `POST /api/admin/services/{name}/enable` |
 | `/api/music/*` | Music | `POST /api/music/songs/{id}/generate` |
+| `/api/dj/*` | DJ Studio | `POST /api/dj/tracks`, `POST /api/dj/mixes/{id}/scene`, `POST /api/dj/mixes/{id}/render` |
 | `/api/video/*` | Video | `POST /api/video/projects/{id}/run` |
 | `/api/voice/*` | Voice/TTS | `POST /api/voice/tts`, `POST /api/voice/v1/audio/speech` |
 | `/api/srt/*` | Subtitles | `POST /api/srt/align` |
@@ -968,7 +1032,8 @@ See [`.env.example`](.env.example) for every option and comment.
 
 | Target | What it does |
 |---|---|
-| `make up` | Create data/.env and start the always-on core (optional services stay disabled) |
+| `make up` | Seed data/.env if needed, then start/restart the core using existing images and data |
+| `make rebuild` | Rebuild and recreate the core after a source update |
 | `make up-gpu` | Core in NVIDIA mode; services enabled later build with CUDA |
 | `make up-vulkan` | Core in AMD/Intel Vulkan mode; services enabled later build with Vulkan |
 | `make up-all` | Build/start every optional service immediately |
@@ -978,7 +1043,7 @@ See [`.env.example`](.env.example) for every option and comment.
 | `make wait` | Wait for gateway + frontend health |
 | `make health` | Probe public app and gateway |
 | `make status` | Containers + gateway health |
-| `make models` | Download LLM + music + Whisper + text + Piper models |
+| `make models` | Download LLM + music + Whisper + text + Piper models (or use Settings → Models) |
 | `make models-llm/music/whisper/text/piper/images/qvac` | Per-family downloads |
 | `make gpu-info` | NVIDIA, `/dev/dri` and Vulkan info |
 | `make test` | Python compile/tests + frontend typecheck/build |
@@ -1001,7 +1066,7 @@ See [`.env.example`](.env.example) for every option and comment.
 | Music | ACE-Step 1.5 Turbo Q8_0 + 0.6B LM + Qwen3 embedding + VAE | ~7.7 GB | GGUF C++ CPU/Vulkan |
 | Lyrics/planner | Ollama `llama3.2:3b` (or chosen model) | 2 GB | Ollama CPU/GPU |
 | Voice | OmniVoice `k2-fsa/OmniVoice` + Whisper large-v3-turbo | 4–8 GB | Torch CPU/CUDA |
-| Voice | 5 Piper voices | ~330 MB | ONNX CPU |
+| Voice | 15 Piper voices (male/female US, UK, FR, DE, ES, PT) | ~0.9 GB | ONNX CPU |
 | Subtitles | faster-whisper tiny→large-v3 | 75 MB–3 GB | CTranslate2 CPU/CUDA |
 | Translation | OPUS-MT pt↔en, optional NLLB-200 600M | 1.2 GB / 2.4 GB | Torch CPU |
 | Summary | T5 EN + PT small | ~500 MB | Torch CPU |
@@ -1009,6 +1074,8 @@ See [`.env.example`](.env.example) for every option and comment.
 | QVAC | WAN 2.1/2.2, LTX-2, MiniMax-H3 | 4–25 GB per family | QVAC SD.cpp / Vulkan |
 
 Models are cached in `./data/models` and never re-downloaded unless removed.
+The Settings → Models page exposes each model pack as a job-backed install; it
+reports installed/partial state without re-downloading completed packs.
 `make models` is explicit; normal startup does not silently pull multi-gigabyte
 weights except ACE-Step's engine (controlled by `ACESTEP_DOWNLOAD_MODELS`).
 Optional service images are not built while their service is disabled; the
@@ -1084,7 +1151,7 @@ service (e.g. QVAC without a GPU) can be offline while the rest works.
 
 ### `403 Invalid internal token`
 
-This means a running container was started with a different `INTERNAL_TOKEN` than the gateway. The token is now persisted in `data/state/internal.token` and `make up` force-recreates the core with it.
+This means a running container was started with a different `INTERNAL_TOKEN` than the gateway. The token is persisted in `data/state/internal.token`; run `make up` to apply changed configuration, or `make rebuild` to recreate the core after a source update.
 
 ```bash
 make down
@@ -1097,16 +1164,17 @@ restart every container.
 
 ### `music-engine` says `/data/models/acestep` is not writable
 
-The engine image runs as the host UID/GID recorded by `make init` (`OPENSTUDIO_UID` /
-`OPENSTUDIO_GID`). Recreate the data directories with the correct ownership:
+The engine runs as root by default so it can create `/data/models/acestep` on
+the shared data volume, which is normally owned by the root-owned core
+containers. If you deliberately run `./data/models` as a host user, set
+`ACESTEP_UID` / `ACESTEP_GID` in `.env` to that UID/GID and recreate the engine.
 
 ```bash
-make init
-make fix-perms
-make down && make up
+# only when the model volume is owned by uid/gid 1000
+ACESTEP_UID=1000 ACESTEP_GID=1000
 ```
 
-Then enable **Music** in Settings.
+Then disable/re-enable **Music** in Settings.
 
 ### First page keeps redirecting to setup/login
 
@@ -1193,7 +1261,8 @@ make screenshots   # demo build + headless Chrome capture
 ```
 
 Backend tests cover shared path safety, SRT round-trips, password/session/API-key
-security and job persistence. The full stack was smoke-tested for auth, files,
+security, job persistence, the service-manager dependency planner and DJ
+arrangement/style-model/effect smoke tests. The full stack was smoke-tested for auth, files,
 jobs, image generation, document pipelines, FFmpeg extraction, music project
 creation and video project creation.
 
@@ -1241,6 +1310,7 @@ open-studio/
 │   ├── files/                   # shared file explorer API
 │   ├── llm/                     # OpenAI-compatible bridge
 │   ├── music/                   # music projects/songs/lyrics/takes
+│   ├── dj/                      # analysis, style models, synth, mix scenes, effects
 │   ├── video*/                  # orchestrator + audio/lyrics/planner/animation/renderer
 │   ├── voice/                   # OmniVoice + Piper
 │   ├── srt/                     # Whisper + DP lyric alignment
