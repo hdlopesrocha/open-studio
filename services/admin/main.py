@@ -40,7 +40,7 @@ log = logging.getLogger("admin")
 VERSION = "1.0.0"
 PROJECT_DIR = Path(os.getenv("OPENSTUDIO_PROJECT_DIR", "/project"))
 COMPOSE_FILE = PROJECT_DIR / "docker-compose.yml"
-CORE = {"files", "jobhub", "admin", "gateway", "frontend"}
+CORE = {"files", "jobhub", "admin", "gateway", "frontend", "chat"}
 
 META: dict[str, dict[str, Any]] = {
     "admin": {"label": "Service Manager", "description": "Builds, starts and stops optional services on demand.", "group": "Core", "requires": []},
@@ -48,6 +48,7 @@ META: dict[str, dict[str, Any]] = {
     "files": {"label": "Files", "description": "Shared storage and file explorer API.", "group": "Core", "requires": []},
     "jobhub": {"label": "Job Hub", "description": "Persistent per-component queues and SSE progress.", "group": "Core", "requires": []},
     "frontend": {"label": "Frontend", "description": "Unified Vue application served by nginx.", "group": "Core", "requires": []},
+    "chat": {"label": "Chat", "description": "Persistent local ChatGPT-style sessions backed by the LLM bridge.", "group": "Core AI", "requires": ["llm"]},
     "music": {
         "label": "Music Studio",
         "description": "ACE-Step 1.5 projects, songs, lyrics, takes and exports.",

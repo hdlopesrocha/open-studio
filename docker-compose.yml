@@ -89,6 +89,28 @@ services:
       retries: 8
       start_period: 15s
 
+  # ── Persistent local chat ───────────────────────────────────────────────
+  chat:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/chat/Dockerfile
+    image: openstudio/chat:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-chat
+    environment:
+      <<: *common-env
+      LLM_URL: http://llm:8000
+      CHAT_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      CHAT_DB_PATH: /data/state/chat.db
+      CHAT_CONTEXT_MESSAGES: ${CHAT_CONTEXT_MESSAGES:-40}
+      CHAT_CONTEXT_CHARS: ${CHAT_CONTEXT_CHARS:-24000}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+
   ollama:
     profiles: ["services"]
     image: ollama/ollama:${OLLAMA_VERSION:-latest}
@@ -685,6 +707,7 @@ services:
       YTDLP_URL: http://ytdlp:8000
       QVAC_URL: http://qvac:8000
       LLM_URL: http://llm:8000
+      CHAT_URL: http://chat:8000
       SESSION_COOKIE: ${SESSION_COOKIE:-os_session}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       SESSION_DAYS: ${SESSION_DAYS:-30}

@@ -55,10 +55,10 @@ init: ## Create ./data, seed initial_data, .env and a random INTERNAL_TOKEN
 	@echo "Data directory: $(CURDIR)/data"
 
 build: init ## Build the always-on core images (optional services are built on demand)
-	$(COMPOSE) build files jobhub admin gateway frontend
+	$(COMPOSE) build files jobhub admin gateway frontend chat
 
 up: init ## Start/restart the core; reuse existing images and persistent data
-	COMPOSE_OVERRIDES= $(COMPOSE) --profile services up -d files jobhub admin gateway frontend
+	COMPOSE_OVERRIDES= $(COMPOSE) --profile services up -d files jobhub admin gateway frontend chat
 	@echo ""
 	@echo "Open Studio core is starting."
 	@echo "  Web app:      http://localhost:$(OPENSTUDIO_PORT)"
@@ -74,20 +74,20 @@ up-gpu: init ## Start the core app with NVIDIA CUDA used for on-demand services
 	TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 \
 	VOICE_DEVICE=cuda WHISPER_DEVICE=cuda SRT_INSTALL_CUDA=1 QVAC_DEVICE=gpu \
 	COMPOSE_OVERRIDES="-f docker-compose.gpu.yml" \
-		$(COMPOSE) --profile services up -d files jobhub admin gateway frontend
+		$(COMPOSE) --profile services up -d files jobhub admin gateway frontend chat
 	@echo "NVIDIA mode active. Enable services in Settings → Services; builds use the GPU override."
 
 up-vulkan: init ## Start the core app with AMD/Intel Vulkan for on-demand services
 	ACESTEP_VULKAN=1 QVAC_DEVICE=gpu \
 	COMPOSE_OVERRIDES="-f docker-compose.vulkan.yml" \
-		$(COMPOSE) --profile services up -d files jobhub admin gateway frontend
+		$(COMPOSE) --profile services up -d files jobhub admin gateway frontend chat
 	@echo "Vulkan mode active. Enable services in Settings → Services; builds use the Vulkan override."
 
 up-all: init ## Start every service (no lazy loading)
 	$(COMPOSE) --profile services up -d
 
 rebuild: init ## Rebuild and recreate the core after a source update
-	COMPOSE_OVERRIDES= $(COMPOSE) --profile services up -d --build --force-recreate files jobhub admin gateway frontend
+	COMPOSE_OVERRIDES= $(COMPOSE) --profile services up -d --build --force-recreate files jobhub admin gateway frontend chat
 
 down: ## Stop all containers (data is kept)
 	$(COMPOSE) --profile services down --remove-orphans

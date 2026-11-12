@@ -52,6 +52,7 @@ SERVICES: dict[str, tuple[str, str, str, str]] = {
     "files": (service_url("files"), "/api/files", "Files", "core"),
     "admin": (service_url("admin"), "/api/admin", "Services", "core"),
     "jobs": (service_url("jobhub"), "/api/jobs", "Jobs", "core"),
+    "chat": (service_url("chat"), "/api/chat", "Chat", "core"),
     "music": (service_url("music"), "/api/music", "Music", "create"),
     "dj": (service_url("dj"), "/api/dj", "DJ Studio", "create"),
     "video": (service_url("video"), "/api/video", "Video", "create"),
