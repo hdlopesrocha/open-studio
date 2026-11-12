@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field
 from openstudio_common import INTERNAL_TOKEN, STATE_ROOT, create_service_app, env, service_url, utc_now
 
 from .context import APP_CONTEXT
+from .tools import TOOL_GUIDE, attachment_context, execute_tool
 
 log = logging.getLogger("chat")
 
@@ -61,6 +63,7 @@ class MessageCreate(BaseModel):
     model: str | None = Field(default=None, max_length=200)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=2048, ge=1, le=8192)
+    attachments: list[str] = Field(default_factory=list, max_length=12)
 
 
 class ChatStore:
@@ -246,13 +249,12 @@ async def _llm_models() -> dict[str, Any]:
         return {"items": [], "default": DEFAULT_MODEL, "reachable": False, "error": str(exc)}
 
 
-async def _call_llm(session: dict[str, Any], messages: list[dict[str, Any]], payload: MessageCreate) -> dict[str, Any]:
-    model = (payload.model or session.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+async def _request_llm(messages: list[dict[str, Any]], model: str, *, temperature: float = 0.7, max_tokens: int = 2048) -> dict[str, Any]:
     body = {
         "model": model,
         "messages": messages,
-        "temperature": payload.temperature,
-        "max_tokens": payload.max_tokens,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "stream": False,
     }
     try:
@@ -282,6 +284,10 @@ async def _call_llm(session: dict[str, Any], messages: list[dict[str, Any]], pay
     return {"content": content, "model": data.get("model") or model, "usage": data.get("usage") or {}}
 
 
+async def _call_llm(session: dict[str, Any], messages: list[dict[str, Any]], payload: MessageCreate) -> dict[str, Any]:
+    model = (payload.model or session.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    return await _request_llm(messages, model, temperature=payload.temperature, max_tokens=payload.max_tokens)
+
 def _context(session: dict[str, Any], history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     system_prompt = str(session.get("system_prompt") or "").strip()
@@ -292,8 +298,148 @@ def _context(session: dict[str, Any], history: list[dict[str, Any]]) -> list[dic
     while selected and total > CONTEXT_CHARS:
         removed = selected.pop(0)
         total -= len(str(removed.get("content") or ""))
-    messages.extend({"role": item["role"], "content": item["content"]} for item in selected)
+    for item in selected:
+        content = str(item.get("content") or "")
+        attachments = item.get("metadata", {}).get("attachments") if isinstance(item.get("metadata"), dict) else []
+        if attachments:
+            content += "\n\n" + attachment_context([str(path) for path in attachments])
+        messages.append({"role": str(item.get("role") or "user"), "content": content})
     return messages
+
+
+DETERMINISTIC_ROUTES = {
+    "home": "/", "dashboard": "/", "chat": "/chat", "audio": "/music", "music": "/music",
+    "dj": "/music?tab=dj-library", "dj library": "/music?tab=dj-library",
+    "dj create": "/music?tab=dj-create", "dj mix": "/music?tab=dj-mix",
+    "srt": "/music?tab=srt", "subtitles": "/music?tab=srt", "video": "/video",
+    "qvac": "/video?tab=qvac", "documents": "/documents", "docs": "/documents",
+    "pdf": "/documents?tab=pdf", "summary": "/documents?tab=summary",
+    "translate": "/documents?tab=translate", "translation": "/documents?tab=translate",
+    "voice": "/voice", "images": "/images", "picture": "/images", "files": "/files",
+    "jobs": "/jobs", "settings": "/settings",
+}
+
+SERVICE_ALIASES = {
+    "chat": "chat", "music": "music", "ace-step": "music-engine", "music engine": "music-engine",
+    "dj": "dj", "video": "video", "voice": "voice", "srt": "srt", "subtitles": "srt",
+    "images": "imagegen", "imagegen": "imagegen", "docs": "docs", "documents": "docs",
+    "translation": "translation", "translate": "translation", "summary": "summary",
+    "pdf": "pdf", "ffmpeg": "ffmpeg", "ytdlp": "ytdlp", "yt-dlp": "ytdlp", "qvac": "qvac",
+    "llm": "llm", "ollama": "ollama",
+}
+
+MODEL_ALIASES = {
+    "llama": "llm-llama3.2-3b", "llm": "llm-llama3.2-3b", "ace-step": "music-ace-step",
+    "music": "music-ace-step", "whisper": "whisper-large-v3", "large-v3": "whisper-large-v3",
+    "translation": "translation-all", "opus": "translation-opus", "nllb": "translation-nllb",
+    "summary": "summary-all", "piper": "piper-voices", "omnivoice": "omnivoice",
+    "qvac": "qvac-sd21", "sd turbo": "image-sd-turbo", "sdxl": "image-sdxl",
+}
+
+ACTION_WORDS = re.compile(r"\b(create|generate|make|render|translate|summarize|summarise|transcribe|convert|extract|download|mix|run|install|enable|disable|restart|build|open|go to|take me|navigate|diagnose|fix|error|broken|failed|logs?)\b", re.I)
+
+
+def _deterministic_actions(message: str) -> list[dict[str, Any]]:
+    text = message.lower().strip()
+    actions: list[dict[str, Any]] = []
+    if re.search(r"\b(go to|open|take me to|navigate to|show me)\b", text):
+        for label, path in sorted(DETERMINISTIC_ROUTES.items(), key=lambda item: len(item[0]), reverse=True):
+            if label in text:
+                actions.append({"tool": "navigate", "args": {"path": path}})
+                break
+    service_action = re.search(r"\b(enable|disable|restart|build|turn on|turn off|start|stop)\s+(?:the\s+)?([a-z0-9 -]+)", text)
+    if service_action:
+        verb, raw_name = service_action.group(1), service_action.group(2).strip()
+        for alias, service in sorted(SERVICE_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+            if raw_name.startswith(alias):
+                action = {"turn on": "enable", "turn off": "disable", "start": "enable", "stop": "disable"}.get(verb, verb)
+                actions.append({"tool": "service_action", "args": {"name": service, "action": action}})
+                break
+    if "logs" in text:
+        for alias, service in SERVICE_ALIASES.items():
+            if alias in text:
+                actions.append({"tool": "service_logs", "args": {"name": service, "lines": 160}})
+                break
+    if re.search(r"\b(install|download|recheck|re-check|verify)\b", text):
+        for alias, model_id in MODEL_ALIASES.items():
+            if alias in text:
+                actions.append({"tool": "recheck_model" if re.search(r"recheck|re-check|verify", text) else "model_install", "args": {"model_id": model_id}})
+                break
+    if re.search(r"\b(diagnose|diagnostic|fix|error|broken|not working|failed|why.*(working|failing))\b", text):
+        actions.append({"tool": "diagnose", "args": {}})
+    if re.search(r"\b(opencode|open code|coding agent)\b", text):
+        actions.append({"tool": "opencode_prompt", "args": {"problem": message}})
+    return actions
+
+
+async def _llm_plan(session: dict[str, Any], message: str, attachments: list[str], model: str) -> list[dict[str, Any]]:
+    if not ACTION_WORDS.search(message):
+        return []
+    context = attachment_context(attachments)
+    prompt = (
+        "You are the Open Studio action planner. Decide whether the user is asking you to perform an operation. "
+        "Return a JSON object only, with an actions array. If no operation is needed, return {\"actions\":[]}. "
+        "Use only the tools below and do not invent API paths.\n\n" + TOOL_GUIDE +
+        "\nUseful REST examples: POST /api/images/generate {provider,prompt,width,height}; "
+        "POST /api/translate/translate {text,source_language,target_language}; "
+        "POST /api/summary/summarize {text,length,language}; POST /api/voice/tts {text,engine,voice}; "
+        "POST /api/srt/align {audio_path,lyrics}; POST /api/ffmpeg/run {operation,input_path,options}; "
+        "POST /api/jobs {component,action,title,params}. "
+        "Never disable core services or delete files.\n\n"
+        f"User request:\n{message}\n\n{context}"
+    )
+    result = await _request_llm(
+        [{"role": "system", "content": APP_CONTEXT + "\n\n" + prompt}, {"role": "user", "content": message}],
+        model,
+        temperature=0.1,
+        max_tokens=1000,
+    )
+    raw = result["content"].strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+    try:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        payload = json.loads(raw[start:end + 1])
+        actions = payload.get("actions") if isinstance(payload, dict) else []
+        if not isinstance(actions, list):
+            return []
+        allowed = {"navigate", "list_services", "service_action", "service_logs", "list_models", "model_install", "recheck_model", "list_jobs", "job_action", "list_files", "read_file", "write_file", "api_request", "diagnose", "opencode_prompt"}
+        return [
+            {"tool": str(item.get("tool")), "args": item.get("args") if isinstance(item.get("args"), dict) else {}}
+            for item in actions[:4]
+            if isinstance(item, dict) and str(item.get("tool")) in allowed
+        ]
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return []
+
+
+async def _run_agent(session: dict[str, Any], message: str, attachments: list[str], model: str) -> tuple[list[dict[str, Any]], str | None]:
+    actions = _deterministic_actions(message)
+    if not actions:
+        actions = await _llm_plan(session, message, attachments, model)
+    results: list[dict[str, Any]] = []
+    for action in actions[:4]:
+        result = await execute_tool(action["tool"], action.get("args") or {})
+        results.append({"tool": action["tool"], "args": action.get("args") or {}, **result})
+    if not results:
+        return [], None
+    summary = json.dumps(results, ensure_ascii=False)[:9000]
+    try:
+        answer = await _request_llm(
+            [
+                {"role": "system", "content": APP_CONTEXT},
+                {"role": "user", "content": f"User request: {message}\n\nAgent tool results:\n{summary}\n\nExplain what was done, what failed, and give the next exact step. Mention links returned by navigate tools."},
+            ],
+            model,
+            temperature=0.2,
+            max_tokens=1200,
+        )
+        text = answer["content"]
+    except HTTPException:
+        text = "Agent actions completed.\n" + "\n".join(f"- {item['tool']}: {'ok' if item.get('ok') else item.get('error', 'failed')}" for item in results)
+    return results, text
 
 
 @router.get("/context")
@@ -371,21 +517,39 @@ async def send_message(session_id: str, payload: MessageCreate) -> dict[str, Any
     session = STORE.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
-    user_message = STORE.append_message(session_id, "user", payload.content.strip())
-    history = STORE.list_messages(session_id)
-    reply = await _call_llm(session, _context(session, history), payload)
+    attachments = [str(path).strip() for path in payload.attachments if str(path).strip()]
+    attachments = [path for path in attachments if not path.startswith("/") and ".." not in Path(path).parts]
+    user_message = STORE.append_message(
+        session_id,
+        "user",
+        payload.content.strip(),
+        metadata={"attachments": attachments},
+    )
+    model = (payload.model or session.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    actions, agent_text = await _run_agent(session, payload.content, attachments, model)
+    if agent_text is not None:
+        assistant_content = agent_text
+        usage: dict[str, Any] = {}
+        assistant_model = model
+    else:
+        history = STORE.list_messages(session_id)
+        reply = await _call_llm(session, _context(session, history), payload)
+        assistant_content = reply["content"]
+        usage = reply.get("usage") or {}
+        assistant_model = reply["model"]
     assistant_message = STORE.append_message(
         session_id,
         "assistant",
-        reply["content"],
-        metadata={"model": reply["model"], "usage": reply.get("usage") or {}},
+        assistant_content,
+        metadata={"model": assistant_model, "usage": usage, "actions": actions},
     )
     return {
         "user_message": user_message,
         "assistant_message": assistant_message,
         "messages": [user_message, assistant_message],
         "session": STORE.get_session(session_id),
-        "model": reply["model"],
+        "model": assistant_model,
+        "actions": actions,
     }
 
 

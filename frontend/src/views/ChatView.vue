@@ -1,19 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import {
   Bot,
   Check,
   Copy,
   Loader2,
   MessageSquarePlus,
+  Paperclip,
   RefreshCw,
   Send,
   Sparkles,
   Trash2,
   UserRound,
   Wrench,
+  X,
 } from "lucide-vue-next";
-import { api, relativeTime } from "@/lib/api";
+import { api, relativeTime, uploadFile } from "@/lib/api";
 import { DEMO } from "@/lib/types";
 import { useSystemStore } from "@/stores/system";
 import { useToastStore } from "@/stores/toasts";
@@ -43,6 +46,7 @@ interface ChatMessage {
 
 const system = useSystemStore();
 const toasts = useToastStore();
+const router = useRouter();
 const llmOnline = computed(() => DEMO || !system.status || system.service("llm")?.online === true);
 const sessions = ref<ChatSession[]>([]);
 const messages = ref<ChatMessage[]>([]);
@@ -55,6 +59,9 @@ const loading = ref(false);
 const sending = ref(false);
 const error = ref("");
 const copiedId = ref("");
+const fileInput = ref<HTMLInputElement | null>(null);
+const attachments = ref<Array<{ path: string; name: string; size?: number }>>([]);
+const uploading = ref(false);
 const messageEnd = ref<HTMLElement | null>(null);
 
 const activeSession = computed(() => sessions.value.find((session) => session.id === activeId.value) || null);
@@ -180,14 +187,44 @@ async function deleteSession(session: ChatSession) {
   }
 }
 
+function pickAttachment() {
+  fileInput.value?.click();
+}
+
+async function onAttachmentChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  input.value = "";
+  if (!files.length) return;
+  uploading.value = true;
+  try {
+    for (const file of files.slice(0, 8 - attachments.value.length)) {
+      const folder = activeId.value ? `chat/uploads/${activeId.value}` : "chat/uploads";
+      const result = await uploadFile(folder, file);
+      const path = result.file?.path || `${folder}/${file.name}`;
+      attachments.value.push({ path, name: result.file?.name || file.name, size: result.file?.size || file.size });
+    }
+  } catch (err: any) {
+    toasts.error(err?.message || "Could not upload the attachment.");
+  } finally {
+    uploading.value = false;
+  }
+}
+
+function removeAttachment(index: number) {
+  attachments.value.splice(index, 1);
+}
+
 async function send() {
   const text = draft.value.trim();
   if (!text || sending.value) return;
   if (!activeId.value) await newSession();
   if (!activeId.value) return;
+  const outgoingAttachments = attachments.value.map((item) => item.path);
   sending.value = true;
   error.value = "";
   draft.value = "";
+  attachments.value = [];
   try {
     if (DEMO) {
       messages.value.push({ id: `u-${Date.now()}`, session_id: activeId.value, role: "user", content: text, created_at: new Date().toISOString() });
@@ -195,14 +232,16 @@ async function send() {
       messages.value.push({ id: `a-${Date.now()}`, session_id: activeId.value, role: "assistant", content: "Demo mode: connect the Chat service and local LLM to get a real answer.", created_at: new Date().toISOString() });
       return;
     }
-    const data = await api.post<{ messages: ChatMessage[]; session: ChatSession; model: string }>(
+    const data = await api.post<{ messages: ChatMessage[]; session: ChatSession; model: string; actions?: Array<any> }>(
       `/chat/sessions/${activeId.value}/messages`,
-      { content: text, model: model.value },
+      { content: text, model: model.value, attachments: outgoingAttachments },
     );
     messages.value.push(...(data.messages || []));
     const session = sessions.value.find((item) => item.id === activeId.value);
     if (session && data.session) Object.assign(session, data.session);
     await scrollToBottom();
+    const navigation = (data.actions || []).find((action: any) => action.tool === "navigate" && action.data?.path);
+    if (navigation?.data?.path) router.push(navigation.data.path);
   } catch (err: any) {
     error.value = err?.message || "The local model could not answer.";
     // Keep the user's attempted message visible so it can be retried or edited.
@@ -226,6 +265,15 @@ async function copyMessage(message: ChatMessage) {
     }, 1400);
   } catch {
     toasts.error("Could not copy the message.");
+  }
+}
+
+async function copyOpencodePrompt(prompt: string) {
+  try {
+    await navigator.clipboard.writeText(prompt);
+    toasts.success("OpenCode prompt copied");
+  } catch {
+    toasts.error("Could not copy the OpenCode prompt.");
   }
 }
 
@@ -310,6 +358,17 @@ onMounted(async () => {
             <div class="chat-avatar"><Bot v-if="message.role === 'assistant'" :size="15" /><UserRound v-else :size="15" /></div>
             <div class="chat-bubble-wrap">
               <div class="chat-bubble">{{ message.content }}</div>
+              <div v-if="message.metadata?.actions?.length" class="chat-agent-actions">
+                <template v-for="(action, actionIndex) in message.metadata.actions" :key="actionIndex">
+                  <RouterLink v-if="action.tool === 'navigate' && action.data?.path" :to="action.data.path" class="chip clickable">
+                    Open {{ action.data.label || action.data.path }}
+                  </RouterLink>
+                  <button v-else-if="action.tool === 'opencode_prompt' && action.data?.prompt" class="chip clickable" @click="copyOpencodePrompt(action.data.prompt)">
+                    Copy OpenCode prompt
+                  </button>
+                  <span v-else class="chip" :class="action.ok ? 'success' : 'danger'">{{ action.tool }} {{ action.ok ? "done" : "failed" }}</span>
+                </template>
+              </div>
               <div class="chat-message-actions">
                 <span>{{ relativeTime(message.created_at) }}</span>
                 <button class="icon-btn" :title="copiedId === message.id ? 'Copied' : 'Copy message'" @click="copyMessage(message)">
@@ -337,9 +396,18 @@ onMounted(async () => {
         </div>
 
         <div class="chat-composer">
+          <div v-if="attachments.length" class="chat-attachments">
+            <span v-for="(attachment, index) in attachments" :key="attachment.path" class="chip">
+              <Paperclip :size="10" /> {{ attachment.name }}
+              <button class="icon-btn" style="padding: 0; margin-left: 3px" title="Remove attachment" @click="removeAttachment(index)"><X :size="10" /></button>
+            </span>
+          </div>
+          <input ref="fileInput" type="file" multiple hidden @change="onAttachmentChange" />
           <textarea v-model="draft" class="textarea" rows="3" :disabled="!llmOnline" placeholder="Message your local model…  Shift+Enter for a new line" @keydown="onComposerKeydown" />
           <div class="row-between" style="margin-top: 8px">
-            <span class="small muted"><Sparkles :size="11" /> {{ model }} · local session context</span>
+            <span class="row small muted" style="gap: 7px"><Sparkles :size="11" /> {{ model }} · local session context
+              <button class="icon-btn" title="Attach a file" :disabled="uploading || attachments.length >= 8" @click="pickAttachment"><Loader2 v-if="uploading" :size="13" class="spin" /><Paperclip v-else :size="13" /></button>
+            </span>
             <button class="btn btn-primary" :disabled="sending || !draft.trim() || !llmOnline" @click="send"><Loader2 v-if="sending" :size="14" class="spin" /><Send v-else :size="14" /> Send</button>
           </div>
         </div>
@@ -389,4 +457,9 @@ onMounted(async () => {
 .chat-context { margin-top: 7px; color: var(--muted); font-size: 10px; }
 .chat-context summary { cursor: pointer; }
 .chat-context p { margin: 5px 0 0; line-height: 1.5; }
+</style>
+
+<style scoped>
+.chat-attachments { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 7px; }
+.chat-agent-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
 </style>
