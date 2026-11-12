@@ -536,6 +536,15 @@ def _dir_has_files(path: Path) -> bool:
         return False
 
 
+def _translation_model_ready(path: Path) -> bool:
+    """A translation checkpoint needs config, weights and a tokenizer."""
+    if not path.is_dir() or not (path / "config.json").is_file():
+        return False
+    weights = ("model.safetensors", "pytorch_model.bin", "model.safetensors.index.json", "pytorch_model.bin.index.json")
+    tokenizers = ("tokenizer.json", "tokenizer_config.json", "source.spm", "vocab.json", "sentencepiece.bpe.model")
+    return any((path / name).is_file() and (path / name).stat().st_size > 10 * 1024 * 1024 for name in weights) and any((path / name).is_file() for name in tokenizers)
+
+
 def _hf_cache(repo: str) -> Path:
     return MODEL_ROOT / "huggingface" / "hub" / f"models--{repo.replace('/', '--')}"
 
@@ -632,8 +641,8 @@ async def model_status(item: dict[str, Any]) -> dict[str, Any]:
             "nllb": ("nllb-200-distilled-600M",),
             "all": ("pt-en", "en-pt", "nllb-200-distilled-600M"),
         }.get(group, ("pt-en", "en-pt", "nllb-200-distilled-600M"))
-        installed = all(_dir_has_files(directory / name) for name in required)
-        detail = "installed" if installed else f"missing: {', '.join(name for name in required if not _dir_has_files(directory / name))}"
+        installed = all(_translation_model_ready(directory / name) for name in required)
+        detail = "installed" if installed else f"missing: {', '.join(name for name in required if not _translation_model_ready(directory / name))}"
     elif kind == "summary":
         directory = MODEL_ROOT / "summary"
         group = str(item.get("models") or "all")

@@ -125,7 +125,12 @@ def _module_available(name: str) -> bool:
 def _folder_ready(folder: Path) -> bool:
     if not folder.is_dir() or not (folder / "config.json").is_file():
         return False
-    has_weights = any((folder / name).is_file() for name in _WEIGHT_FILES)
+    # A checkpoint is not ready while the downloader has only written a
+    # tiny/partial file. The smallest supported checkpoint is still tens of MB.
+    has_weights = any(
+        (folder / name).is_file() and (folder / name).stat().st_size > 10 * 1024 * 1024
+        for name in _WEIGHT_FILES
+    )
     has_tokenizer = any((folder / name).is_file() for name in _TOKENIZER_FILES)
     return has_weights and has_tokenizer
 
