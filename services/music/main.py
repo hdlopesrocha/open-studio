@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -545,6 +546,50 @@ def put_lyrics(song_id: str, payload: LyricsUpdate) -> dict[str, Any]:
     require_song(song_id)
     sections = db.save_lyrics(song_id, [section.model_dump() for section in payload.sections])
     return {"sections": sections}
+
+
+def _lyrics_take(song: dict[str, Any], take_id: str | None) -> dict[str, Any] | None:
+    """Resolve an explicit take, then the selected master, then the latest take."""
+    song_id = str(song.get("id") or "")
+    if take_id:
+        take = db.fetch_one(
+            "SELECT id, duration FROM takes WHERE id = ? AND song_id = ?", (take_id, song_id)
+        )
+        if take is None:
+            raise HTTPException(status_code=404, detail="Take not found for this song.")
+        return take
+    selected_id = song.get("selected_take_id")
+    if selected_id:
+        take = db.fetch_one(
+            "SELECT id, duration FROM takes WHERE id = ? AND song_id = ?", (selected_id, song_id)
+        )
+        if take is not None:
+            return take
+    return db.fetch_one(
+        "SELECT id, duration FROM takes WHERE song_id = ? ORDER BY position DESC, created_at DESC LIMIT 1",
+        (song_id,),
+    )
+
+
+@router.get("/songs/{song_id}/lyrics.srt")
+def export_lyrics_srt(song_id: str, take_id: str | None = Query(default=None)) -> Response:
+    """Download the structured lyrics as SRT, timed to the selected/latest take."""
+    song = require_song(song_id)
+    take = _lyrics_take(song, take_id)
+    take_duration = float((take or {}).get("duration") or 0)
+    song_duration = float(song.get("duration") or 0)
+    duration = take_duration if take_duration > 0 else (song_duration if song_duration > 0 else 60.0)
+    body = lyrics.build_lyrics_srt(
+        db.get_lyrics(song_id),
+        duration,
+        fallback_duration=song_duration or 60.0,
+    )
+    filename = lyrics.srt_filename(str(song.get("title") or "lyrics"))
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quote(filename)}",
+        "Cache-Control": "no-store",
+    }
+    return Response(content=body, media_type="application/x-subrip; charset=utf-8", headers=headers)
 
 
 def _lyrics_job_params(payload: LyricsDraftRequest, song: dict[str, Any] | None) -> dict[str, Any]:

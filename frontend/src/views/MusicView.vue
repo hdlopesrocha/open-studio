@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import {
   Activity,
   AlertTriangle,
@@ -34,6 +35,7 @@ import {
   Package,
   Paintbrush,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   Save,
@@ -57,6 +59,8 @@ import PageHeader from "@/components/PageHeader.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import FilePicker from "@/components/FilePicker.vue";
 import AudioPlayer from "@/components/AudioPlayer.vue";
+import SectionPlayer from "@/components/music/SectionPlayer.vue";
+import DjView from "@/views/DjView.vue";
 import JobCard from "@/components/JobCard.vue";
 import TabsBar from "@/components/TabsBar.vue";
 import ProgressBar from "@/components/ProgressBar.vue";
@@ -429,7 +433,16 @@ const DEMO_SYSTEM = {
 const jobs = useJobsStore();
 const toasts = useToastStore();
 
-const tab = ref(DEMO ? "studio" : "projects");
+const route = useRoute();
+const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+const requestedTab = typeof route.query.tab === "string" ? route.query.tab : "";
+const tab = ref(requestedTab || (DEMO ? "studio" : "projects"));
+watch(
+  () => route.query.tab,
+  (next) => {
+    if (typeof next === "string" && next && next !== tab.value) tab.value = next;
+  },
+);
 const projects = ref<MusicProject[]>([]);
 const songs = ref<MusicSong[]>([]);
 const takes = ref<MusicTake[]>([]);
@@ -2152,6 +2165,9 @@ const tabs = computed(() => [
   { id: "projects", label: "Projects", count: projects.value.length },
   { id: "studio", label: "Studio" },
   { id: "library", label: "Library", count: songs.value.length },
+  { id: "dj-library", label: "DJ Library" },
+  { id: "dj-create", label: "DJ Create" },
+  { id: "dj-mix", label: "DJ Mix", count: 0 },
   { id: "engine", label: "Engine" },
 ]);
 
@@ -2232,6 +2248,79 @@ const sectionMap = computed<Array<{ id: string; label: string; type: string; wid
     tint: sectionTint(section.type),
   }));
 });
+
+const musicPlayer = ref<any>(null);
+const musicCurrent = ref(0);
+
+const lyricSpans = computed(() => {
+  const sections = lyricsSections.value;
+  if (!sections.length) return [];
+  const duration = Number(masterTake.value?.duration || activeSong.value?.duration || 0) || 60;
+  const weights = sections.map((section) => Math.max(1, lineCount(section.content) || 2));
+  const total = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+  let cursor = 0;
+  return sections.map((section, index) => {
+    const start = (cursor / total) * duration;
+    cursor += weights[index];
+    const end = (cursor / total) * duration;
+    return {
+      id: section.id,
+      label: section.label,
+      type: section.type,
+      start,
+      end,
+      weight: weights[index],
+      color: sectionColor(section.type),
+    };
+  });
+});
+
+const activeLyricSectionId = computed(() => {
+  const time = musicCurrent.value;
+  return lyricSpans.value.find((span) => time >= span.start && time < span.end)?.id || "";
+});
+
+function onMusicTime(payload: { current: number; duration?: number }) {
+  musicCurrent.value = Number(payload.current) || 0;
+}
+
+function seekLyricSection(section: LyricsSection) {
+  const span = lyricSpans.value.find((item) => item.id === section.id);
+  if (span) musicPlayer.value?.seekTo?.(span.start, true);
+}
+
+function allLyricsText(): string {
+  return lyricsSections.value
+    .map((section) => `[${section.label}]\n${String(section.content || "").trim()}`.trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function copyAllLyrics() {
+  const text = allLyricsText();
+  if (!text) {
+    toasts.error("There are no lyrics to copy.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    toasts.success("Full lyrics copied with section markers.");
+  } catch {
+    toasts.error("Could not copy the lyrics.");
+  }
+}
+
+function downloadLyricsSrt() {
+  if (!activeSong.value) return;
+  const take = masterTake.value;
+  const query = take ? `?take_id=${encodeURIComponent(take.id)}` : "";
+  const url = `${API_BASE}/music/songs/${encodeURIComponent(activeSong.value.id)}/lyrics.srt${query}`;
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.target = "_blank";
+  anchor.rel = "noopener";
+  anchor.click();
+}
 
 const compareTakeA = computed<MusicTake | null>(() => takes.value.find((take) => take.id === compareA.value) || null);
 const compareTakeB = computed<MusicTake | null>(() => takes.value.find((take) => take.id === compareB.value) || null);
@@ -2563,23 +2652,16 @@ if (DEMO) initializeDemo();
                 </div>
               </div>
               <div v-if="masterTake" class="panel-body stack">
-                <div v-if="sectionMap.length" class="section-map" aria-hidden="true">
-                  <span
-                    v-for="segment in sectionMap"
-                    :key="segment.id"
-                    class="section-map-segment"
-                    :style="{ width: `${segment.width}%`, background: segment.tint, borderBottom: `2px solid ${segment.color}` }"
-                    :title="segment.label"
-                  >
-                    {{ segment.label }}
-                  </span>
-                </div>
-                <AudioPlayer
+                <SectionPlayer
+                  ref="musicPlayer"
                   :src="masterTake.path"
                   :title="takeTitle(masterTake)"
                   :subtitle="`${modelName(masterTake.metadata?.model || activeSong.model_id)} · ${formatDuration(masterTake.duration)}`"
                   :download-path="DEMO ? null : masterTake.path"
                   :bars="144"
+                  :sections="lyricSpans"
+                  :duration="masterTake.duration"
+                  @timeupdate="onMusicTime"
                 />
                 <div class="master-meta-grid">
                   <div class="meta-tile">
@@ -2733,8 +2815,10 @@ if (DEMO) initializeDemo();
                   <h3>Lyrics</h3>
                   <p>{{ lyricsSections.length }} sections · {{ totalLines }} lines · {{ totalWords }} words, structured for ACE-Step.</p>
                 </div>
-                <div class="row">
+                <div class="row" style="gap: 5px; flex-wrap: wrap">
                   <button class="btn btn-sm" @click="openDraftModal"><Wand2 :size="12" /> Draft with LLM</button>
+                  <button class="btn btn-sm" :disabled="!lyricsSections.length" @click="copyAllLyrics"><Copy :size="12" /> Copy all</button>
+                  <button class="btn btn-sm" :disabled="!lyricsSections.length || !activeSong" @click="downloadLyricsSrt"><Download :size="12" /> SRT</button>
                   <button class="btn btn-sm btn-primary" :disabled="savingLyrics || !lyricsDirty" @click="saveLyrics()">
                     <Loader2 v-if="savingLyrics" :size="12" class="spin" /><Save v-else :size="12" /> Save lyrics
                   </button>
@@ -2782,6 +2866,7 @@ if (DEMO) initializeDemo();
                   v-for="(section, index) in lyricsSections"
                   :key="section.id"
                   class="lyric-section"
+                  :class="{ active: activeLyricSectionId === section.id }"
                   :style="{ borderLeftColor: sectionColor(section.type) }"
                 >
                   <div class="lyric-head">
@@ -2794,6 +2879,7 @@ if (DEMO) initializeDemo();
                       <span class="chip nowrap">{{ lineCount(section.content) }} lines</span>
                     </div>
                     <div class="row" style="gap: 2px">
+                      <button class="icon-btn" title="Seek to this section" @click="seekLyricSection(section)"><Play :size="13" /></button>
                       <button class="icon-btn" :disabled="index === 0" title="Move up" @click="moveLyricSection(index, -1)"><ArrowUp :size="13" /></button>
                       <button class="icon-btn" :disabled="index === lyricsSections.length - 1" title="Move down" @click="moveLyricSection(index, 1)"><ArrowDown :size="13" /></button>
                       <button class="icon-btn" title="Remove section" @click="removeLyricSection(index)"><Trash2 :size="13" /></button>
@@ -3235,6 +3321,15 @@ if (DEMO) initializeDemo();
           <button class="btn btn-sm btn-ghost" @click="tab = 'projects'"><FolderOpen :size="12" /> Projects</button>
         </div>
       </section>
+    </template>
+
+    <!-- ---------------------------------------------------------------- DJ studio -->
+    <template v-else-if="tab.startsWith('dj-')">
+      <DjView
+        embedded
+        :active-tab="tab.slice(3)"
+        @update:active-tab="tab = `dj-${$event}`"
+      />
     </template>
 
     <!-- ---------------------------------------------------------------- engine -->
@@ -4128,6 +4223,8 @@ if (DEMO) initializeDemo();
   gap: 13px;
 }
 .form-grid .span-2 { grid-column: 1 / -1; }
+
+.lyric-section.active { border-color: var(--accent); background: rgba(139, 92, 246, 0.06); }
 
 .lyric-section {
   display: flex;

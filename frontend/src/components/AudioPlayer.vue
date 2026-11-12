@@ -17,6 +17,13 @@ const props = withDefaults(
   { title: "", subtitle: "", downloadPath: null, bars: 96, compact: false, waveform: null },
 );
 
+const emit = defineEmits<{
+  timeupdate: [payload: { current: number; duration: number }];
+  play: [];
+  pause: [];
+  ended: [];
+}>();
+
 const audio = ref<HTMLAudioElement | null>(null);
 const peaks = ref<number[]>([]);
 const playing = ref(false);
@@ -101,6 +108,7 @@ function seekTo(seconds: number, autoplay = false) {
       const limit = Number.isFinite(element.duration) && element.duration > 0 ? element.duration : target;
       element.currentTime = Math.min(target, limit);
       current.value = element.currentTime;
+      emit("timeupdate", { current: current.value, duration: duration.value });
       if (autoplay) element.play().catch(() => {});
     } catch {
       pendingSeek.value = target;
@@ -132,6 +140,7 @@ function seek(event: MouseEvent) {
   const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
   element.currentTime = ratio * duration.value;
   current.value = element.currentTime;
+  emit("timeupdate", { current: current.value, duration: duration.value });
 }
 
 function refresh() {
@@ -139,6 +148,7 @@ function refresh() {
   if (!element) return;
   current.value = element.currentTime || 0;
   duration.value = Number.isFinite(element.duration) ? element.duration : 0;
+  emit("timeupdate", { current: current.value, duration: duration.value });
   if (pendingSeek.value !== null && element.readyState >= 1) {
     const target = pendingSeek.value;
     pendingSeek.value = null;
@@ -152,6 +162,21 @@ function refresh() {
 }
 
 defineExpose({ seekTo, pause });
+
+function onPlay() {
+  playing.value = true;
+  emit("play");
+}
+
+function onPause() {
+  playing.value = false;
+  emit("pause");
+}
+
+function onEnded() {
+  playing.value = false;
+  emit("ended");
+}
 
 function setVolume() {
   if (audio.value) audio.value.volume = volume.value;
@@ -207,9 +232,9 @@ watch(() => props.waveform, () => applyWaveform());
       preload="metadata"
       @timeupdate="refresh"
       @loadedmetadata="refresh"
-      @play="playing = true"
-      @pause="playing = false"
-      @ended="playing = false"
+      @play="onPlay"
+      @pause="onPause"
+      @ended="onEnded"
     />
   </div>
 </template>

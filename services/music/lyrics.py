@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from openstudio_common import INTERNAL_TOKEN, env, env_float, service_url
+from openstudio_common import INTERNAL_TOKEN, build_srt, env, env_float, service_url
 
 from .languages import get_language, lyrics_language_instruction
 from .schemas import LyricsDraftRequest
@@ -200,6 +200,118 @@ Requested structure (follow this order):
 Write the lyrics now. Keep the section labels exactly as shown. Do not add new sections unless the brief
 needs a short intro or outro. If a language needs non-Latin script, use its natural script."""
     return system_prompt, user_prompt
+
+
+SECTION_LABELS: dict[str, str] = {
+    "intro": "Intro",
+    "verse": "Verse",
+    "pre-chorus": "Pre-Chorus",
+    "chorus": "Chorus",
+    "bridge": "Bridge",
+    "outro": "Outro",
+    "instrumental": "Instrumental",
+}
+
+
+def lyric_lines(content: str) -> list[str]:
+    """Return the non-empty lyric lines in performance order."""
+    normal = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+    return [line.strip() for line in normal.split("\n") if line.strip()]
+
+
+def section_weight(section: dict[str, Any]) -> int:
+    """Share duration by line count; empty/instrumental sections keep a slot."""
+    lines = lyric_lines(section.get("content") or "")
+    return len(lines) if lines else 2
+
+
+def section_label(section: dict[str, Any]) -> str:
+    label = str(section.get("label") or "").strip()
+    if label and label.lower() != "section":
+        return label
+    kind = str(section.get("type") or "").strip().lower()
+    return SECTION_LABELS.get(kind) or (kind.replace("-", " ").title() if kind else "Section")
+
+
+def _safe_duration(duration: Any, fallback: float = 60.0) -> float:
+    """Never emit zero-length cues when a take has no probed duration yet."""
+    try:
+        value = float(duration or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value <= 0:
+        try:
+            value = float(fallback or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+    return value if value > 0 else 60.0
+
+
+def lyric_section_spans(
+    sections: list[dict[str, Any]], duration: Any, *, fallback_duration: float = 60.0
+) -> list[dict[str, Any]]:
+    """Lay sections out proportionally to their line counts over the take duration."""
+    weights = [section_weight(section) for section in sections]
+    total_weight = sum(weights)
+    if not sections or total_weight <= 0:
+        return []
+    seconds = _safe_duration(duration, fallback_duration)
+    cursor = 0
+    spans: list[dict[str, Any]] = []
+    for section, weight in zip(sections, weights):
+        start = seconds * cursor / total_weight
+        cursor += weight
+        end = seconds * cursor / total_weight
+        spans.append(
+            {
+                "section": section,
+                "label": section_label(section),
+                "lines": lyric_lines(section.get("content") or ""),
+                "start": start,
+                "end": end,
+            }
+        )
+    return spans
+
+
+def build_lyrics_srt(
+    sections: list[dict[str, Any]],
+    duration: Any,
+    *,
+    fallback_duration: float = 60.0,
+    empty_label: str = "Instrumental",
+) -> str:
+    """Build deterministic SRT cues from the song's structured lyrics.
+
+    Section labels are included with the first lyric line of each section so a
+    player can show both context and the sung line. Instrumental or empty
+    sections become a single label cue instead of disappearing from the sheet.
+    """
+    spans = lyric_section_spans(sections, duration, fallback_duration=fallback_duration)
+    if not spans:
+        return build_srt([{"start": 0.0, "end": _safe_duration(duration, fallback_duration), "text": f"[{empty_label}]"}])
+    cues: list[dict[str, Any]] = []
+    for span in spans:
+        label = str(span["label"])
+        lines: list[str] = span["lines"]
+        start = float(span["start"])
+        end = float(span["end"])
+        if not lines:
+            cues.append({"start": start, "end": max(start + 0.05, end), "text": f"[{label}]"})
+            continue
+        line_span = max(0.05, (end - start) / len(lines))
+        for index, line in enumerate(lines):
+            cue_start = start + index * line_span
+            cue_end = start + (index + 1) * line_span
+            text = f"[{label}]\n{line}" if index == 0 else line
+            cues.append({"start": cue_start, "end": max(cue_start + 0.05, cue_end), "text": text})
+    return build_srt(cues)
+
+
+def srt_filename(title: str) -> str:
+    """ASCII-safe download filename for a song's lyric sheet."""
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", str(title or "").strip()).strip("-_.")
+    return f"{(base[:80] or 'lyrics')}-lyrics.srt"
 
 
 async def health() -> dict[str, Any]:

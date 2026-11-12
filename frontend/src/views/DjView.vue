@@ -36,7 +36,14 @@ import TabsBar from "@/components/TabsBar.vue";
 import ProgressBar from "@/components/ProgressBar.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import AudioPlayer from "@/components/AudioPlayer.vue";
+import SectionPlayer from "@/components/music/SectionPlayer.vue";
 import EmptyState from "@/components/EmptyState.vue";
+
+const props = withDefaults(defineProps<{ embedded?: boolean; activeTab?: string }>(), {
+  embedded: false,
+  activeTab: "",
+});
+const emit = defineEmits<{ "update:activeTab": [value: string] }>();
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 
@@ -217,7 +224,16 @@ const jobs = useJobsStore();
 const system = useSystemStore();
 const toasts = useToastStore();
 
-const tab = ref("library");
+const tab = ref(props.activeTab || "library");
+watch(
+  () => props.activeTab,
+  (next) => {
+    if (next && next !== tab.value) tab.value = next;
+  },
+);
+watch(tab, (next) => {
+  if (props.embedded) emit("update:activeTab", next);
+});
 const loading = ref(false);
 const error = ref("");
 const tracks = ref<DjTrack[]>([]);
@@ -1135,8 +1151,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page dj-page">
+  <div class="page dj-page" :class="{ 'dj-embedded': embedded }">
     <PageHeader
+      v-if="!embedded"
       eyebrow="DJ Studio"
       title="DJ Studio"
       subtitle="Upload and analyse records, train a generative model for every style, edit AI arrangements, then build a beat-matched mix scene with transitions and emotion-changing effects."
@@ -1157,7 +1174,7 @@ onBeforeUnmount(() => {
       DJ Studio is not running. Enable <strong>DJ Studio</strong> in <RouterLink to="/settings">Settings → Services</RouterLink>.
     </div>
 
-    <TabsBar v-model="tab" :tabs="tabs" />
+    <TabsBar v-if="!embedded" v-model="tab" :tabs="tabs" />
 
     <div v-if="activeJob" class="panel dj-job">
       <div class="panel-body stack" style="gap: 8px">
@@ -1225,17 +1242,6 @@ onBeforeUnmount(() => {
                 </div>
                 <span class="badge" :class="track.analyzed ? 'success' : track.status === 'failed' ? 'failed' : 'queued'">{{ track.analyzed ? "analysed" : track.status }}</span>
               </div>
-              <div v-if="(track.analysis_version || 0) >= 3 && track.sections?.length" class="scene-strip" :title="`${track.sections.length} detected scenes · click a scene to seek`">
-                <button
-                  v-for="(section, index) in track.sections"
-                  :key="section.scene_id || section.id || index"
-                  type="button"
-                  class="scene-block"
-                  :style="{ width: trackSectionWidth(track, section), background: sectionColor(section.role) }"
-                  :title="`Seek to ${section.label} · ${formatDuration(section.start)}–${formatDuration(section.end)} · ${Math.round(section.energy)}% energy · ${section.mood}`"
-                  @click="seekToSection(track, section)"
-                >{{ section.label }}</button>
-              </div>
               <div class="row" style="gap: 5px">
                 <span v-if="track.bpm" class="chip">{{ track.bpm.toFixed(0) }} BPM</span>
                 <span v-if="track.key" class="chip">{{ track.key }}</span>
@@ -1251,7 +1257,7 @@ onBeforeUnmount(() => {
                 <span class="small mono">{{ Math.round(track.energy * 100) }}%</span>
               </div>
               <div class="row split-actions">
-                <AudioPlayer v-if="track.path" :ref="(element) => setTrackPlayer(track.id, element)" compact :src="track.path" :bars="64" :waveform="track.waveform" style="flex: 1" />
+                <SectionPlayer v-if="track.path" :ref="(element) => setTrackPlayer(track.id, element)" compact :src="track.path" :bars="64" :waveform="track.waveform" :sections="track.sections" :duration="track.duration" style="flex: 1" />
               </div>
               <div v-if="track.error" class="alert error small" style="padding: 6px 8px">{{ track.error }}</div>
               <div class="row" style="justify-content: flex-end; gap: 5px">
@@ -1671,4 +1677,8 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .dj-track-grid, .style-grid { grid-template-columns: 1fr; }
 }
+</style>
+
+<style scoped>
+.dj-embedded { padding: 0; }
 </style>
