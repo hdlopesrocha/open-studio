@@ -18,7 +18,7 @@ through the shared job hub. The documents pipeline uses the synchronous
 | Voice profiles | `/data/files/voices/<voice_id>/` with `meta.json`, `reference.wav`, `prompt.pt`, optional `preview.wav` |
 | Generated audio | `/data/files/voice/outputs/<output_id>/` with `audio.<fmt>` and `meta.json` |
 | Temporary uploads | `/data/files/voice/uploads/` |
-| Piper models | `/data/models/piper/<voice-id>/<voice-id>.onnx` + `.onnx.json` |
+| Piper models | `/data/files/voices/piper/<voice-id>/<voice-id>.onnx` + `.onnx.json` |
 | Hugging Face cache | `/data/models/huggingface` (`HF_HOME`) |
 
 All paths returned by the API are relative to `/data/files`, so they can be
@@ -80,9 +80,14 @@ default; 3–10 s is ideal).
 
 - `GET /piper/voices` – built-in catalog + availability.
 - `POST /piper/install` – JSON `{"voice_id":"pt-PT-tugao"}` or
-  `{"voice_ids":[...], "force":true}`. Downloads from Hugging Face into
-  `/data/models/piper`. It is synchronous (the gateway has no read timeout) but
-  can also be pre-seeded with `voice-download-models`.
+  `{"voice_ids":[...], "force":true}`. Returns HTTP 202 with a job-hub job.
+  The `piper_install` job downloads from Hugging Face into `/data/files/voices/piper`
+  and reports progress in Jobs; it can also be pre-seeded with
+  `voice-download-models`.
+
+The bundled catalog includes male and female Piper voices for US English,
+UK English, French, German, Spanish and Portuguese, plus the existing US
+English Lessac female voice.
 
 Piper supports WAV and MP3, speed 0.5–2.0, optional loudness normalization
 (`normalize_audio`, ffmpeg `dynaudnorm`), and sentence-level timeline entries
@@ -91,7 +96,7 @@ with real start/end times. Pitch is rejected unless a catalog voice declares
 
 ## Jobs
 
-Actions: `tts`, `batch`, `train`, `preview`, `transcribe`.
+Actions: `tts`, `batch`, `train`, `preview`, `transcribe`, `piper_install`.
 
 Submit routes POST to `JOBHUB_URL/api/jobs` with
 `{component:"voice", action, title, params}` and return the job hub job.
@@ -170,6 +175,7 @@ Piper endpoints working.
 | `MIN_VOICE_SECONDS` / `MAX_VOICE_SECONDS` | `1.0` / `30.0` | Reference audio constraints |
 | `MAX_IMPORT_MB` | `200` | Voice ZIP import limit |
 | `DEFAULT_PIPER_VOICE` | `pt-PT-tugao` | Default Piper voice |
+| `PIPER_MODELS_DIR` | `/data/files/voices/piper` | Shared Piper model directory |
 | `PIPER_SENTENCE_GAP_MS` | `120` | Silence between Piper sentences |
 | `HF_HOME` | `/data/models/huggingface` | Hugging Face cache |
 

@@ -75,7 +75,9 @@ class Settings:
 
     @property
     def piper_dir(self) -> Path:
-        return self.models_root / "piper"
+        """Piper voice models live with the other user-facing voice data."""
+        override = env("PIPER_MODELS_DIR", "").strip()
+        return Path(override) if override else self.files_root / "voices" / "piper"
 
     @classmethod
     def from_env(cls) -> "Settings":

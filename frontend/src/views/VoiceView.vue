@@ -174,7 +174,7 @@ let languageBlurTimer: number | undefined;
 
 const result = ref<any>(DEMO ? demoResult : null);
 const activeJobId = ref("");
-const activeKind = ref<"tts" | "batch" | "train" | "preview" | "transcribe">("tts");
+const activeKind = ref<"tts" | "batch" | "train" | "preview" | "transcribe" | "piper_install">("tts");
 const submittedJob = ref<Job | null>(null);
 const processedJobId = ref("");
 let pollTimer: number | undefined;
@@ -293,6 +293,22 @@ const isPortuguese = computed(() => String(form.language || "").toLowerCase().st
 const scriptSentences = computed(() => form.text.split(/[.!?…]+/).map((item) => item.trim()).filter(Boolean).length);
 const selectedVoice = computed(() => voices.value.find((voice) => voice.id === form.voice_id) || voices.value[0] || null);
 const piperAvailable = computed(() => piperVoices.value.filter((voice) => voice.available).length);
+const piperLanguageFilter = ref("all");
+const piperGenderFilter = ref("all");
+const piperLanguageOptions = computed(() => {
+  const seen = new Map<string, string>();
+  for (const voice of piperVoices.value) {
+    if (!seen.has(voice.language)) seen.set(voice.language, voice.language_name || languageLabel(voice.language));
+  }
+  return [...seen.entries()].map(([id, label]) => ({ id, label }));
+});
+const filteredPiperVoices = computed(() =>
+  piperVoices.value.filter((voice) => {
+    if (piperLanguageFilter.value !== "all" && voice.language !== piperLanguageFilter.value) return false;
+    if (piperGenderFilter.value !== "all" && voice.gender !== piperGenderFilter.value) return false;
+    return true;
+  }),
+);
 const piperEngine = computed(() => (catalog.value.engines || []).find((engine: any) => engine.id === "piper") || null);
 const omniEngine = computed(() => (catalog.value.engines || []).find((engine: any) => engine.id === "omnivoice") || null);
 const batchItems = computed(() => {
@@ -521,8 +537,10 @@ watch(
     if (job.status === "completed") {
       handleJobCompleted(job);
     } else if (job.status === "failed") {
+      if (activeKind.value === "piper_install") piperInstalling.value = "";
       toasts.error(job.error || "Voice job failed");
     } else if (job.status === "canceled") {
+      if (activeKind.value === "piper_install") piperInstalling.value = "";
       toasts.info("Voice job canceled");
     }
   },
@@ -569,6 +587,13 @@ async function handleJobCompleted(job: Job) {
       trainForm.transcript = text;
       toasts.success("Transcript added");
     }
+  } else if (activeKind.value === "piper_install") {
+    const data: any = job.result?.data || {};
+    const items = data.items || [];
+    piperInstalling.value = "";
+    if (!DEMO) await loadCatalog();
+    const names = items.map((item: any) => item.name || item.id).filter(Boolean).join(", ");
+    toasts.success(names ? `${names} voice${items.length > 1 ? "s" : ""} installed` : "Voice download complete");
   }
 }
 
@@ -1055,16 +1080,16 @@ async function installPiper(voice: any) {
     if (DEMO) {
       voice.available = true;
       voice.size_bytes = 63_402_112;
+      piperInstalling.value = "";
       toasts.success(`${voice.name} installed`);
       return;
     }
-    await api.post("/voice/piper/install", { voice_id: voice.id });
-    toasts.success(`${voice.name} installed`);
-    await loadCatalog();
+    const raw = await api.post<any>("/voice/piper/install", { voice_id: voice.id });
+    trackJob(raw, "piper_install");
+    toasts.info(`${voice.name} download queued — follow it in Jobs`);
   } catch (error: any) {
-    toasts.error(error.message);
-  } finally {
     piperInstalling.value = "";
+    toasts.error(error.message);
   }
 }
 
@@ -1720,7 +1745,7 @@ onBeforeUnmount(() => {
             <div class="panel-head">
               <div>
                 <h3>Active job</h3>
-                <p>{{ activeKind === "tts" ? "Speech synthesis" : activeKind }}</p>
+                <p>{{ activeKind === "tts" ? "Speech synthesis" : activeKind === "piper_install" ? "Voice download" : activeKind }}</p>
               </div>
               <span class="badge running">{{ Math.round(activeJob.progress) }}%</span>
             </div>
@@ -2092,6 +2117,13 @@ onBeforeUnmount(() => {
     </section>
 
     <section v-else-if="tab === 'builtin'" class="stack">
+      <div v-if="activeKind === 'piper_install' && activeJob" class="panel">
+        <div class="panel-head">
+          <div><h3>Voice download</h3><p>This download is running as a global job.</p></div>
+          <span class="badge running">{{ Math.round(activeJob.progress) }}%</span>
+        </div>
+        <div class="panel-body"><JobCard :job="activeJob" compact @cancel="cancelActive" /></div>
+      </div>
       <div class="panel">
         <div class="panel-head">
           <div>
@@ -2104,8 +2136,20 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="panel-body">
+          <div class="row" style="gap: 8px; margin-bottom: 12px">
+            <select v-model="piperLanguageFilter" class="select input-sm" style="width: 210px">
+              <option value="all">All languages</option>
+              <option v-for="language in piperLanguageOptions" :key="language.id" :value="language.id">{{ language.label }}</option>
+            </select>
+            <select v-model="piperGenderFilter" class="select input-sm" style="width: 150px">
+              <option value="all">All genders</option>
+              <option value="female">Female</option>
+              <option value="male">Male</option>
+            </select>
+            <span class="chip">{{ filteredPiperVoices.length }} shown</span>
+          </div>
           <div class="grid grid-3">
-            <article v-for="(voice, index) in piperVoices" :key="voice.id" class="panel piper-card">
+            <article v-for="(voice, index) in filteredPiperVoices" :key="voice.id" class="panel piper-card">
               <div class="panel-body stack" style="gap: 10px">
                 <div class="row" style="align-items: flex-start">
                   <span class="voice-avatar" :style="avatarStyle(voice.name, index + 2)">{{ initials(voice.name) }}</span>
@@ -2159,7 +2203,7 @@ onBeforeUnmount(() => {
               <span v-for="voice in piperVoices" :key="voice.id" class="chip" :class="voice.available ? 'success' : ''">{{ voice.language }}</span>
             </div>
             <div class="alert" style="margin-top: 12px">
-              Install calls <span class="mono">POST /api/voice/piper/install</span>. The request is synchronous and can take a minute on a cold cache.
+              Install queues a normal voice job on <span class="mono">/api/voice/piper/install</span>. Progress, errors and retries appear in Jobs and in the download panel above.
             </div>
             <button class="btn btn-sm btn-block" style="margin-top: 10px" @click="tab = 'studio'"><Mic2 :size="13" /> Back to the studio</button>
           </div>

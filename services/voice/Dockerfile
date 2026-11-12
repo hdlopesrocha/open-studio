@@ -68,7 +68,7 @@ RUN python -m pip install -r /app/requirements.txt
 COPY services/voice /app/services/voice
 
 RUN mkdir -p /data/files /data/state /data/cache /data/models /data/artifacts \
-        /data/models/piper /data/models/huggingface \
+        /data/models/piper /data/models/huggingface /data/files/voices/piper \
     && printf '#!/bin/sh\nexec python -m services.voice.download_models "$@"\n' \
         > /usr/local/bin/voice-download-models \
     && chmod +x /usr/local/bin/voice-download-models

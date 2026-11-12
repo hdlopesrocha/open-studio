@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import time
 import uuid
 import zipfile
@@ -49,7 +50,6 @@ from openstudio_common import (
 
 from . import audio
 from .config import Settings
-from .download_models import install_many
 from .errors import VoiceError
 from .jobs import register_handlers
 from .languages import LANGUAGE_IDS, LANGUAGE_PAYLOAD, PORTUGUESE_VARIANT_IDS
@@ -70,7 +70,7 @@ from .storage import (
     public_output,
     public_voice,
 )
-from .voices import VOICES, language_matches
+from .voices import VOICES, get_voice as get_piper_voice, language_matches
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -104,6 +104,36 @@ runner = JobRunner("voice")
 register_handlers(runner, runtime)
 
 
+def _migrate_shared_piper_models() -> None:
+    """Move legacy /data/models/piper voices into the shared files tree.
+
+    Earlier builds kept Piper downloads in the model volume. Voice data now
+    lives under /data/files/voices/piper so it is visible in Files and is
+    included in shared storage backups. Preserve existing files by copying
+    only missing entries.
+    """
+    legacy = settings.models_root / "piper"
+    shared = settings.piper_dir
+    if legacy == shared or not legacy.is_dir():
+        return
+    copied = 0
+    try:
+        for entry in legacy.rglob("*"):
+            if not entry.is_file():
+                continue
+            target = shared / entry.relative_to(legacy)
+            if target.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry, target)
+            copied += 1
+    except OSError:
+        logger.warning("Could not migrate legacy Piper voices into shared storage", exc_info=True)
+        return
+    if copied:
+        logger.info("Migrated %s Piper voice file(s) into %s", copied, shared)
+
+
 async def _startup() -> None:
     for path in (
         settings.voice_dir,
@@ -113,6 +143,7 @@ async def _startup() -> None:
         settings.piper_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
+    _migrate_shared_piper_models()
     # Only remove stale uploads. A service restart must not delete files that a
     # just-requeued job still needs.
     cutoff = time.time() - 24 * 3600
@@ -965,7 +996,7 @@ async def piper_voices(language: str | None = Query(None, max_length=20)) -> dic
     }
 
 
-@router.post("/piper/install")
+@router.post("/piper/install", status_code=202)
 async def piper_install(payload: PiperInstallRequest) -> dict[str, Any]:
     ids: list[str] = []
     if payload.voice_id:
@@ -975,16 +1006,29 @@ async def piper_install(payload: PiperInstallRequest) -> dict[str, Any]:
     ids = list(dict.fromkeys(item for item in ids if item))
     if not ids:
         raise HTTPException(status_code=422, detail="Provide voice_id or voice_ids")
-    try:
-        installed = await run_in_threadpool(install_many, settings, ids, payload.force)
-    except VoiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    selected = []
+    for voice_id in ids:
+        try:
+            selected.append(get_piper_voice(voice_id, settings.default_piper_voice))
+        except KeyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    title = (
+        f"Download voice · {selected[0].name} ({selected[0].language})"
+        if len(selected) == 1
+        else f"Download {len(selected)} voices"
+    )
+    job = await _submit(
+        "piper_install",
+        title,
+        {"voice_ids": [voice.id for voice in selected], "force": payload.force},
+    )
     return {
         "ok": True,
-        "installed": True,
-        "installed_voices": installed,
-        "items": installed,
-        "voices": [voice.public(settings.piper_dir) for voice in VOICES],
+        "queued": True,
+        "id": job.get("id"),
+        "job_id": job.get("id"),
+        "job": job,
+        "voice_ids": [voice.id for voice in selected],
     }
 
 

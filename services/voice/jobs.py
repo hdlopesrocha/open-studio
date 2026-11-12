@@ -7,6 +7,7 @@ progress and checking cancellation at segment boundaries.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -22,10 +23,12 @@ from openstudio_common import (
 )
 
 from . import audio
+from .download_models import install_voice
 from .errors import VoiceError
 from .runtime import VoiceRuntime
 from .schemas import BatchTTSRequest, TTSRequest
 from .storage import public_output, public_voice
+from .voices import VOICES, get_voice
 
 
 def _validation_error(exc: ValidationError) -> HTTPException:
@@ -227,4 +230,56 @@ def register_handlers(runner: JobRunner, runtime: VoiceRuntime) -> None:
             "message": "Transcription complete.",
             "files": [],
             "data": {"text": result.get("text", ""), "filename": result.get("filename")},
+        }
+
+    @runner.action("piper_install")
+    async def run_piper_install(ctx: JobContext) -> dict[str, Any]:
+        params = ctx.params or {}
+        raw_ids = params.get("voice_ids")
+        if not isinstance(raw_ids, list):
+            raw_ids = [params.get("voice_id")] if params.get("voice_id") else []
+        ids = list(dict.fromkeys(str(item) for item in raw_ids if str(item).strip()))
+        if not ids:
+            raise HTTPException(status_code=422, detail="Provide voice_id or voice_ids")
+        selected = []
+        for voice_id in ids:
+            try:
+                selected.append(get_voice(voice_id, runtime.settings.default_piper_voice))
+            except KeyError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        force = bool(params.get("force", False))
+        items: list[dict[str, Any]] = []
+        total = len(selected)
+        for index, voice in enumerate(selected):
+            await ctx.check()
+            await ctx.report(
+                5.0 + (index / total) * 90.0,
+                "Downloading voice",
+                f"{voice.name} · {voice.language_name} · {voice.quality}",
+            )
+            try:
+                result = await asyncio.to_thread(
+                    install_voice,
+                    runtime.settings,
+                    voice.id,
+                    force,
+                )
+            except VoiceError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+            items.append(result)
+            await ctx.report(
+                5.0 + ((index + 1) / total) * 90.0,
+                "Installed",
+                f"{voice.name} is ready" if not result.get("already_installed") else f"{voice.name} was already installed",
+            )
+        names = ", ".join(str(item.get("name") or item.get("id")) for item in items)
+        return {
+            "message": f"Voice download complete: {names}.",
+            "files": [],
+            "data": {
+                "items": items,
+                "voices": [voice.public(runtime.settings.piper_dir) for voice in VOICES],
+                "installed": sum(1 for voice in VOICES if voice.available(runtime.settings.piper_dir)),
+                "total": len(VOICES),
+            },
         }

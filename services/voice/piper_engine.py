@@ -113,6 +113,7 @@ class PiperEngine:
                 ) from exc
 
             config = SynthesisConfig(
+                speaker_id=voice.speaker_id,
                 length_scale=1.0 / max(0.25, float(speed or 1.0)),
                 noise_scale=0.667,
                 noise_w_scale=0.8,
