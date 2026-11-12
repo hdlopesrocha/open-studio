@@ -45,8 +45,8 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 
 | Area | Functionality |
 |---|---|
-| **Chat** | Persistent local ChatGPT-style sessions and conversations backed by Ollama through the LLM bridge. The system prompt knows every Open Studio workspace, service, model, storage path and job workflow; session sidebar, rename/delete, model selector, copy, AI workspace presets and authenticated REST API. Messages are stored in `data/state/chat.db`. |
-| **Audio** | ACE-Step 1.5 songs, structured lyrics, LLM drafts, takes and exports, plus DJ Library/Create/Mix tabs for analysis, style models, AI arrangements, beat-matched multi-section mix scenes and effects, plus an integrated SRT tab for Whisper transcription/lyric alignment. Section-aware shared player, lyric section seeking, complete-lyrics copy and SRT export. |
+| **Chat** | Persistent local ChatGPT-style sessions plus an action agent. It knows every studio, service, model, file path and job workflow; uploads files into shared storage, executes whitelisted REST tools, controls services/models/jobs, diagnoses errors, reads logs, suggests routes, and emits copy-ready OpenCode prompts. It cannot silently alter files or use internal control endpoints. |
+| **Audio** | ACE-Step 1.5 songs, structured lyrics, LLM drafts, takes and exports, plus DJ Library/Create/Mix tabs for analysis, style models, AI arrangements, adjustable segment count/target-duration mix scenes and effects, plus an integrated SRT tab for Whisper transcription/lyric alignment. Section-aware shared player, lyric section seeking, complete-lyrics copy, SRT export and bass/drums/snare/voice/air-reactive page colours. |
 | **Video** | Audio + SRT → analysed timeline → scene plan → procedural / Diffusers / ComfyUI / QVAC artwork → FFmpeg or OpenCV animation → styled subtitles → final MP4/MKV. QVAC video/image/upscale/model tabs are embedded in Video. Scene editor, timeline, image variants, depth maps, audio-reactive effects, pause/cancel, export panel. |
 | **Voice** | OmniVoice zero-shot cloning, voice design by attributes, auto voice, Whisper transcription, 646 languages, Piper built-in voices, batch synthesis, retraining, export/import, previews, history. All TTS runs in Docker. |
 | **Subtitles** | MP3 + lyrics → frame-accurate SRT using Whisper word timestamps and dynamic-programming lyric alignment. Transcribe, from-text timing, SRT/VTT/ASS conversion, editable cue table, optional cue translation. |
@@ -247,9 +247,12 @@ inside the container and builds into the host Docker daemon.
 The Chat system prompt includes a complete Open Studio operating guide covering
 Audio (songwriting, DJ, SRT), Video/QVAC, Documents (PDF, translation, summary),
 Voice, Images, FFmpeg, yt-dlp, Files, Jobs, Settings, model downloads and the
-per-page service requirements. It can guide workflows and produce exact REST
-requests, but it cannot silently execute another workspace's tools. The context
-is also exposed at `GET /api/chat/context`.
+per-page service requirements. The agent can attach uploaded shared files,
+call whitelisted REST APIs, enable/restart services, install/re-check models,
+inspect/retry jobs, read service logs, run diagnostics, navigate through links,
+and generate OpenCode prompts for deeper repairs. Destructive paths, internal
+control endpoints and core-service disabling are blocked. The context is also
+exposed at `GET /api/chat/context`.
 
 ### DJ Studio (inside Audio)
 
@@ -283,7 +286,9 @@ Audio workspace). It is a self-contained crate-digging and mix workspace:
 DJ state is stored in `data/state/dj.db`; uploads and renders live under
 `data/files/dj/`. The service is CPU-friendly and does not require the
 ACE-Step engine. Music and DJ share the same section-aware player component and
-section/classification colours.
+section/classification colours. AI Mix scenes expose both a segment budget and
+a target render duration, and the page palette reacts to the active player's
+bass, drums, snare, voice and air bands.
 
 ### Service-aware pages
 
@@ -1289,7 +1294,7 @@ make verify        # against a running stack (set OPENSTUDIO_PASSWORD)
 make screenshots   # demo build + headless Chrome capture
 ```
 
-Backend tests currently cover 80 cases across shared path safety, chat
+Backend tests currently cover 83 cases across shared path safety, chat
 sessions/messages with a mocked LLM, password/session/API-key security, job
 persistence, the service-manager dependency planner, music project/song/lyrics
 CRUD, lyric SRT timing/export, PDF extraction (real generated PDF), SRT/VTT/ASS
