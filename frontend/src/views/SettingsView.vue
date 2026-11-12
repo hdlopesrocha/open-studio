@@ -12,6 +12,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import TabsBar from "@/components/TabsBar.vue";
 import ServicesPanel from "@/components/ServicesPanel.vue";
+import ModelsPanel from "@/components/ModelsPanel.vue";
 
 const system = useSystemStore();
 const auth = useAuthStore();
@@ -256,8 +257,9 @@ const examples = {
     </div>
 
     <div v-else class="stack">
+      <ModelsPanel />
       <section class="panel">
-        <div class="panel-head"><div><h3>Model downloads</h3><p>Models are deliberately explicit and cached on disk.</p></div></div>
+        <div class="panel-head"><div><h3>Model downloads (CLI)</h3><p>Equivalent command-line shortcuts for the model packs above.</p></div></div>
         <div class="panel-body grid grid-2">
           <CodeBlock label="All models" code="make models" />
           <CodeBlock label="ACE-Step (music)" code="make models-music" />

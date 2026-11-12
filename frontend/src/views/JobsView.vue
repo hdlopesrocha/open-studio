@@ -80,7 +80,7 @@ async function cancelQueued() {
     <PageHeader
       eyebrow="Global job system"
       title="Job center"
-      subtitle="One persistent queue per component. Music, video, voice, subtitles, images, documents, FFmpeg, yt-dlp and QVAC can run at the same time without blocking each other."
+      subtitle="One persistent queue per component. Music, DJ, video, voice, subtitles, images, documents, models, FFmpeg, yt-dlp and QVAC run without blocking each other."
     >
       <template #actions>
         <button class="btn btn-sm" :disabled="busy" @click="refresh"><RefreshCw :size="13" :class="{ spin: busy }" /> Refresh</button>

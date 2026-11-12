@@ -15,6 +15,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,12 @@ META: dict[str, dict[str, Any]] = {
         "group": "Engines",
         "requires": [],
     },
+    "dj": {
+        "label": "DJ Studio",
+        "description": "Track analysis, style models, AI arrangements and beat-matched mix rendering.",
+        "group": "Create",
+        "requires": [],
+    },
     "video": {
         "label": "Video Studio",
         "description": "Video orchestration: analysis, planning, images, animation and render.",
@@ -99,6 +106,215 @@ router = APIRouter(prefix="/api/admin", tags=["services"])
 SERVICE_NAME = "admin"
 CONTROL_LOCK = asyncio.Lock()
 
+MODEL_ROOT = Path(os.getenv("OPENSTUDIO_MODELS_DIR", "/data/models"))
+PIPER_DIR = Path(os.getenv("PIPER_MODELS_DIR", "").strip() or str(FILES_ROOT / "voices" / "piper"))
+QVAC_HOME_MODELS = Path(os.getenv("QVAC_HOME_MODELS_DIR", "/data/home/.qvac/models"))
+OMNIVOICE_MODEL = os.getenv("OMNIVOICE_MODEL", "k2-fsa/OmniVoice").strip() or "k2-fsa/OmniVoice"
+QVAC_URL = os.getenv("QVAC_URL", "http://qvac:8000").rstrip("/")
+
+# Model packs exposed in Settings → Models. Each entry is installed by a
+# normal job-hub job, so progress and retries are visible alongside all other
+# work. Commands deliberately reuse each service's own downloader.
+MODEL_ITEMS: list[dict[str, Any]] = [
+    {
+        "id": "llm-llama3.2-3b",
+        "label": "Llama 3.2 3B",
+        "group": "Language",
+        "description": "Ollama model used by the lyricist and video planner.",
+        "size": "~2.0 GB",
+        "kind": "ollama",
+        "service": "ollama",
+        "model": "llama3.2:3b",
+    },
+    {
+        "id": "music-ace-step",
+        "label": "ACE-Step 1.5 GGUF set",
+        "group": "Music",
+        "description": "DiT, 5Hz LM, Qwen text encoder and VAE for the music engine.",
+        "size": "~7.7 GB",
+        "kind": "music",
+        "service": "music-engine",
+    },
+    {
+        "id": "whisper-large-v3",
+        "label": "Whisper large-v3",
+        "group": "Subtitles",
+        "description": "Highest-quality faster-whisper transcription model.",
+        "size": "~3.0 GB",
+        "kind": "whisper",
+        "service": "srt",
+        "model": "large-v3",
+    },
+    {
+        "id": "whisper-small",
+        "label": "Whisper small",
+        "group": "Subtitles",
+        "description": "Fast, compact Whisper model for quick subtitle drafts.",
+        "size": "~500 MB",
+        "kind": "whisper",
+        "service": "srt",
+        "model": "small",
+    },
+    {
+        "id": "whisper-base",
+        "label": "Whisper base",
+        "group": "Subtitles",
+        "description": "Very small model for fast drafts and low-memory machines.",
+        "size": "~150 MB",
+        "kind": "whisper",
+        "service": "srt",
+        "model": "base",
+    },
+    {
+        "id": "whisper-medium",
+        "label": "Whisper medium",
+        "group": "Subtitles",
+        "description": "Middle ground between small and large-v3 accuracy.",
+        "size": "~1.5 GB",
+        "kind": "whisper",
+        "service": "srt",
+        "model": "medium",
+    },
+    {
+        "id": "translation-opus",
+        "label": "OPUS-MT Portuguese ↔ English",
+        "group": "Text",
+        "description": "Fast bilingual Portuguese/English translation models.",
+        "size": "~600 MB",
+        "kind": "translation",
+        "service": "translation",
+        "models": "opus",
+    },
+    {
+        "id": "translation-nllb",
+        "label": "NLLB-200 multilingual",
+        "group": "Text",
+        "description": "Optional 600M multilingual translation model for many languages.",
+        "size": "~2.4 GB",
+        "kind": "translation",
+        "service": "translation",
+        "models": "nllb",
+    },
+    {
+        "id": "translation-all",
+        "label": "Translation models (all)",
+        "group": "Text",
+        "description": "Both OPUS-MT and NLLB-200 translation model sets.",
+        "size": "~2.4 GB",
+        "kind": "translation",
+        "service": "translation",
+        "models": "all",
+    },
+    {
+        "id": "summary-en",
+        "label": "Summary · English",
+        "group": "Text",
+        "description": "T5 English summarization checkpoint.",
+        "size": "~250 MB",
+        "kind": "summary",
+        "service": "summary",
+        "models": "en",
+    },
+    {
+        "id": "summary-pt",
+        "label": "Summary · Portuguese",
+        "group": "Text",
+        "description": "T5 Portuguese summarization checkpoint.",
+        "size": "~250 MB",
+        "kind": "summary",
+        "service": "summary",
+        "models": "pt",
+    },
+    {
+        "id": "summary-all",
+        "label": "Summary models (all)",
+        "group": "Text",
+        "description": "English and Portuguese T5 summarization checkpoints.",
+        "size": "~500 MB",
+        "kind": "summary",
+        "service": "summary",
+        "models": "all",
+    },
+    {
+        "id": "piper-voices",
+        "label": "Piper built-in voices",
+        "group": "Voice",
+        "description": "Male and female US/UK English, French, German, Spanish and Portuguese voices.",
+        "size": "~1.0 GB",
+        "kind": "piper",
+        "service": "voice",
+    },
+    {
+        "id": "omnivoice",
+        "label": "OmniVoice model",
+        "group": "Voice",
+        "description": "Cloning, voice design and transcription weights. Large first download.",
+        "size": "4–8 GB",
+        "kind": "omnivoice",
+        "service": "voice",
+    },
+    {
+        "id": "image-sd-turbo",
+        "label": "SD Turbo",
+        "group": "Images",
+        "description": "Fast 1–4 step 512px Diffusers checkpoint for previews.",
+        "size": "~2.5 GB",
+        "kind": "diffusers",
+        "service": "imagegen",
+        "repo": "stabilityai/sd-turbo",
+    },
+    {
+        "id": "image-sd15",
+        "label": "Stable Diffusion 1.5",
+        "group": "Images",
+        "description": "Classic 512px base model with a large LoRA ecosystem.",
+        "size": "~4 GB",
+        "kind": "diffusers",
+        "service": "imagegen",
+        "repo": "runwayml/stable-diffusion-v1-5",
+    },
+    {
+        "id": "image-sdxl",
+        "label": "SDXL Base 1.0",
+        "group": "Images",
+        "description": "1024px photorealistic and illustration model.",
+        "size": "~7 GB",
+        "kind": "diffusers",
+        "service": "imagegen",
+        "repo": "stabilityai/stable-diffusion-xl-base-1.0",
+    },
+    {
+        "id": "image-sdxl-turbo",
+        "label": "SDXL Turbo",
+        "group": "Images",
+        "description": "Fast 1–4 step 1024px preview model.",
+        "size": "~7 GB",
+        "kind": "diffusers",
+        "service": "imagegen",
+        "repo": "stabilityai/sdxl-turbo",
+    },
+    {
+        "id": "image-flux-schnell",
+        "label": "FLUX.1 Schnell",
+        "group": "Images",
+        "description": "High-quality 4-step FLUX model; needs substantial VRAM and disk.",
+        "size": "~24 GB",
+        "kind": "diffusers",
+        "service": "imagegen",
+        "repo": "black-forest-labs/FLUX.1-schnell",
+    },
+    {
+        "id": "qvac-sd21",
+        "label": "QVAC SD 2.1 1B Q4",
+        "group": "QVAC",
+        "description": "CPU-friendly QVAC image diffusion model used by Picture Studio.",
+        "size": "~2.1 GB",
+        "kind": "qvac",
+        "service": "qvac",
+        "source": os.getenv("QVAC_IMAGE_MODEL", "SD_V2_1_1B_Q4_0"),
+    },
+]
+
 
 def compose_command() -> list[str]:
     command = ["docker", "compose", "--project-directory", str(PROJECT_DIR), "-f", str(COMPOSE_FILE)]
@@ -112,10 +328,74 @@ def compose_command() -> list[str]:
     return command
 
 
-def env() -> dict[str, str]:
+_HOST_DIRS: tuple[str, str] | None = None
+
+
+async def host_dirs() -> tuple[str, str]:
+    """Return the host project and data directories.
+
+    Compose runs inside this container, but bind-mount sources are resolved by
+    the Docker daemon on the host. A relative ``OPENSTUDIO_DATA_DIR`` (for
+    example the default ``./data``) would therefore become ``/project/data``
+    and silently create a second data tree. Read our own mounts through the
+    Docker socket so every service managed from here always uses the host
+    paths that the core stack was started with.
+    """
+    global _HOST_DIRS
+    if _HOST_DIRS is not None:
+        return _HOST_DIRS
+
+    data_dir = ""
+    repo_dir = ""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            "inspect",
+            socket.gethostname(),
+            "--format",
+            "{{json .Mounts}}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await process.communicate()
+        if process.returncode == 0 and stdout.strip():
+            mounts = json.loads(stdout.decode("utf-8", "replace"))
+            for mount in mounts if isinstance(mounts, list) else []:
+                destination = str(mount.get("Destination") or "")
+                source = str(mount.get("Source") or "")
+                if destination == "/data/files" and source:
+                    data_dir = str(Path(source).parent)
+                elif destination == "/project" and source:
+                    repo_dir = source
+    except (OSError, ValueError):
+        log.warning("Could not inspect the admin container mounts", exc_info=True)
+
+    if not data_dir:
+        configured = os.getenv("OPENSTUDIO_DATA_DIR", "")
+        if os.path.isabs(configured):
+            data_dir = configured
+        else:
+            # There is no way to turn a path relative to the host repository
+            # into an absolute host path without Docker's help. Fail loudly
+            # rather than writing to /project/data inside the admin container.
+            raise RuntimeError(
+                "Could not determine the host data directory. "
+                "Set OPENSTUDIO_DATA_DIR to an absolute path (make init does this)."
+            )
+    if not repo_dir:
+        configured = os.getenv("OPENSTUDIO_REPO_DIR", "")
+        repo_dir = configured if os.path.isabs(configured) else str(PROJECT_DIR)
+
+    _HOST_DIRS = (data_dir, repo_dir)
+    return _HOST_DIRS
+
+
+async def env() -> dict[str, str]:
+    data_dir, repo_dir = await host_dirs()
     result = os.environ.copy()
     result["COMPOSE_PROJECT_NAME"] = "openstudio"
-    result["OPENSTUDIO_DATA_DIR"] = os.getenv("OPENSTUDIO_DATA_DIR", str(PROJECT_DIR / "data"))
+    result["OPENSTUDIO_DATA_DIR"] = data_dir
+    result["OPENSTUDIO_REPO_DIR"] = repo_dir
     return result
 
 
@@ -124,12 +404,13 @@ async def run_command(
     *,
     ctx: JobContext | None = None,
     timeout: float = 6 * 3600,
+    stage_label: str | None = None,
 ) -> tuple[int, list[str]]:
     log.info("admin command: %s", " ".join(shlex.quote(part) for part in args))
     process = await asyncio.create_subprocess_exec(
         *args,
         cwd=str(PROJECT_DIR),
-        env=env(),
+        env=await env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
@@ -156,7 +437,7 @@ async def run_command(
                 if ctx is not None and len(lines) > 500:
                     del lines[:100]
                 if ctx is not None:
-                    stage = "Building" if "build" in " ".join(args[:8]) else "Applying"
+                    stage = stage_label or ("Building" if "build" in " ".join(args[:8]) else "Applying")
                     progress = min(94.0, 5.0 + len(lines) * 0.6)
                     await ctx.report(progress, stage, line[:180])
         code = await process.wait()
@@ -203,6 +484,39 @@ async def compose_config() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def required_services(name: str, configured: dict[str, Any]) -> list[str]:
+    """Resolve optional dependencies that must be started with ``name``.
+
+    Core services are deliberately excluded: they are always on and recreating
+    them from a job would pull the job hub out from under the running job.
+    """
+    ordered: list[str] = []
+    visited: set[str] = set()
+
+    def walk(current: str) -> None:
+        if current in visited:
+            return
+        visited.add(current)
+        config = configured.get(current)
+        config = config if isinstance(config, dict) else {}
+        dependencies: set[str] = set()
+        depends_on = config.get("depends_on")
+        if isinstance(depends_on, dict):
+            dependencies.update(str(item) for item in depends_on)
+        elif isinstance(depends_on, list):
+            dependencies.update(str(item) for item in depends_on)
+        dependencies.update(META.get(current, {}).get("requires") or [])
+        for dependency in sorted(dependencies):
+            if dependency == name or dependency in CORE or dependency not in configured:
+                continue
+            walk(dependency)
+            if dependency not in ordered:
+                ordered.append(dependency)
+
+    walk(name)
+    return ordered
+
+
 async def image_exists(image: str) -> bool:
     if not image:
         return False
@@ -212,6 +526,291 @@ async def image_exists(image: str) -> bool:
         stderr=asyncio.subprocess.DEVNULL,
     )
     return await process.wait() == 0
+
+
+def _dir_has_files(path: Path) -> bool:
+    try:
+        return path.is_dir() and any(entry.is_file() for entry in path.rglob("*"))
+    except OSError:
+        return False
+
+
+def _hf_cache(repo: str) -> Path:
+    return MODEL_ROOT / "huggingface" / "hub" / f"models--{repo.replace('/', '--')}"
+
+
+def _hf_present(repo: str) -> bool:
+    snapshots = _hf_cache(repo) / "snapshots"
+    try:
+        return snapshots.is_dir() and any(entry.is_dir() and any(entry.iterdir()) for entry in snapshots.iterdir())
+    except OSError:
+        return False
+
+
+def _whisper_present(model: str) -> bool:
+    cache = MODEL_ROOT / "whisper"
+    if (cache / model).exists():
+        return True
+    patterns = [
+        f"models--Systran--faster-whisper-{model}",
+        f"models--Systran--faster-distil-whisper-{model.replace('distil-', '')}",
+        f"models--*--*{model}*",
+    ]
+    return any(next(cache.glob(pattern), None) is not None for pattern in patterns)
+
+
+def _piper_count() -> int:
+    for directory in (PIPER_DIR, MODEL_ROOT / "piper"):
+        try:
+            count = len(list(directory.rglob("*.onnx")))
+        except OSError:
+            continue
+        if count:
+            return count
+    return 0
+
+
+async def _ollama_installed(model: str) -> tuple[bool, str]:
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get("http://ollama:11434/api/tags")
+        if response.status_code >= 400:
+            return False, f"Ollama returned HTTP {response.status_code}"
+        models = response.json().get("models") or []
+        names = [str(item.get("name") or item.get("model") or "") for item in models if isinstance(item, dict)]
+        installed = any(name == model or name.startswith(model + ":") or name.startswith(model) for name in names)
+        return installed, "installed" if installed else "Ollama is running but this model is missing"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Ollama is not reachable: {exc}"
+
+
+async def _qvac_installed(source: str) -> tuple[bool, str]:
+    if _dir_has_files(MODEL_ROOT / "qvac") or _dir_has_files(QVAC_HOME_MODELS):
+        return True, "QVAC model data is present"
+    try:
+        async with httpx.AsyncClient(timeout=3.0, headers=jobhub_headers()) as client:
+            response = await client.get(f"{QVAC_URL}/api/qvac/models/loaded")
+        if response.status_code >= 400:
+            return False, f"QVAC returned HTTP {response.status_code}"
+        items = response.json().get("items") or []
+        names = [str(item.get("modelName") or item.get("name") or "") for item in items if isinstance(item, dict)]
+        installed = any(source == name or source in name for name in names)
+        return installed, "loaded in QVAC" if installed else "not loaded"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"QVAC is not reachable: {exc}"
+
+
+async def model_status(item: dict[str, Any]) -> dict[str, Any]:
+    kind = str(item.get("kind") or "")
+    installed = False
+    detail = ""
+    if kind == "ollama":
+        installed, detail = await _ollama_installed(str(item.get("model") or ""))
+    elif kind == "music":
+        directory = MODEL_ROOT / "acestep"
+        required = {
+            "vae-BF16.gguf",
+            "Qwen3-Embedding-0.6B-Q8_0.gguf",
+            "acestep-5Hz-lm-0.6B-Q8_0.gguf",
+            "acestep-v15-turbo-Q8_0.gguf",
+        }
+        try:
+            present = {entry.name for entry in directory.glob("*.gguf")}
+        except OSError:
+            present = set()
+        installed = required.issubset(present)
+        detail = f"{len(required & present)}/{len(required)} GGUF files present"
+    elif kind == "whisper":
+        installed = _whisper_present(str(item.get("model") or "large-v3"))
+        detail = "installed" if installed else "not downloaded"
+    elif kind == "translation":
+        directory = MODEL_ROOT / "translation"
+        group = str(item.get("models") or "all")
+        required = {
+            "opus": ("pt-en", "en-pt"),
+            "nllb": ("nllb-200-distilled-600M",),
+            "all": ("pt-en", "en-pt", "nllb-200-distilled-600M"),
+        }.get(group, ("pt-en", "en-pt", "nllb-200-distilled-600M"))
+        installed = all(_dir_has_files(directory / name) for name in required)
+        detail = "installed" if installed else f"missing: {', '.join(name for name in required if not _dir_has_files(directory / name))}"
+    elif kind == "summary":
+        directory = MODEL_ROOT / "summary"
+        group = str(item.get("models") or "all")
+        required = {"en": ("en",), "pt": ("pt",), "all": ("en", "pt")}.get(group, ("en", "pt"))
+        installed = all(_dir_has_files(directory / name) for name in required)
+        detail = "installed" if installed else f"missing: {', '.join(name for name in required if not _dir_has_files(directory / name))}"
+    elif kind == "piper":
+        count = _piper_count()
+        installed = count >= 15
+        detail = f"{count}/15 voices installed"
+    elif kind == "omnivoice":
+        installed = _hf_present(OMNIVOICE_MODEL)
+        detail = "installed" if installed else "not downloaded"
+    elif kind == "diffusers":
+        installed = _hf_present(str(item.get("repo") or ""))
+        detail = "installed" if installed else "not downloaded"
+    elif kind == "qvac":
+        installed, detail = await _qvac_installed(str(item.get("source") or ""))
+    return {**item, "installed": installed, "detail": detail}
+
+
+async def _ensure_service_image(service: str, ctx: JobContext) -> None:
+    configured = await compose_config()
+    service_cfg = (configured.get("services") or {}).get(service) or {}
+    image = str(service_cfg.get("image") or "")
+    if image and await image_exists(image):
+        return
+    await ctx.report(4.0, "Building", f"Building the {service} image before downloading its models")
+    code, lines = await run_command([*compose_command(), "build", service], ctx=ctx, timeout=6 * 3600)
+    if code != 0:
+        raise RuntimeError("\n".join(lines[-30:]) or f"Could not build {service}")
+
+
+async def _install_model(ctx: JobContext) -> dict[str, Any]:
+    model_id = str(ctx.params.get("model_id") or "")
+    item = next((entry for entry in MODEL_ITEMS if entry["id"] == model_id), None)
+    if item is None:
+        raise ValueError("Unknown model pack")
+    kind = str(item.get("kind") or "")
+    service = str(item.get("service") or "")
+    await ctx.report(2.0, "Preparing", str(item.get("label") or model_id))
+    lines: list[str] = []
+
+    if kind == "ollama":
+        model = str(item.get("model") or "")
+        up_command = [*compose_command(), "--profile", "services", "up", "-d", "--no-deps", "ollama"]
+        code, out = await run_command(up_command, ctx=ctx, timeout=900, stage_label="Starting")
+        lines.extend(out)
+        if code != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "Could not start Ollama")
+        command = [*compose_command(), "exec", "-T", "ollama", "ollama", "pull", model]
+        code, out = await run_command(command, ctx=ctx, timeout=6 * 3600, stage_label="Downloading model")
+        lines.extend(out)
+        if code != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "Ollama pull failed")
+
+    elif kind == "music":
+        await _ensure_service_image("music-engine", ctx)
+        command = [
+            *compose_command(), "--profile", "services", "run", "--rm", "--no-deps",
+            "--entrypoint", "/opt/acestep/download-models.sh", "music-engine",
+        ]
+        code, out = await run_command(command, ctx=ctx, timeout=12 * 3600, stage_label="Downloading model")
+        lines.extend(out)
+        if code != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "ACE-Step download failed")
+
+    elif kind == "whisper":
+        await _ensure_service_image("srt", ctx)
+        model = str(item.get("model") or "large-v3")
+        code = (
+            "from faster_whisper import WhisperModel; "
+            f"WhisperModel({model!r}, download_root='/data/models/whisper')"
+        )
+        command = [
+            *compose_command(), "--profile", "services", "run", "--rm", "--no-deps",
+            "--entrypoint", "python", "srt", "-c", code,
+        ]
+        code_value, out = await run_command(command, ctx=ctx, timeout=6 * 3600, stage_label="Downloading model")
+        lines.extend(out)
+        if code_value != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "Whisper download failed")
+
+    elif kind == "translation":
+        await _ensure_service_image("translation", ctx)
+        selected = str(item.get("models") or "all")
+        command = [
+            *compose_command(), "--profile", "services", "run", "--rm", "--no-deps",
+            "--entrypoint", "download-models", "translation", "--models", selected,
+        ]
+        code, out = await run_command(command, ctx=ctx, timeout=6 * 3600, stage_label="Downloading model")
+        lines.extend(out)
+        if code != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "Translation download failed")
+
+    elif kind == "summary":
+        await _ensure_service_image("summary", ctx)
+        selected = str(item.get("models") or "all")
+        command = [
+            *compose_command(), "--profile", "services", "run", "--rm", "--no-deps",
+            "--entrypoint", "download-models", "summary", "--models", selected,
+        ]
+        code, out = await run_command(command, ctx=ctx, timeout=6 * 3600, stage_label="Downloading model")
+        lines.extend(out)
+        if code != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "Summary download failed")
+
+    elif kind == "piper":
+        await _ensure_service_image("voice", ctx)
+        command = [
+            *compose_command(), "--profile", "services", "run", "--rm", "--no-deps",
+            "--entrypoint", "voice-download-models", "voice",
+        ]
+        code, out = await run_command(command, ctx=ctx, timeout=6 * 3600, stage_label="Downloading voices")
+        lines.extend(out)
+        if code != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "Piper voice download failed")
+
+    elif kind == "omnivoice":
+        await _ensure_service_image("voice", ctx)
+        code = (
+            "from huggingface_hub import snapshot_download; "
+            f"snapshot_download({OMNIVOICE_MODEL!r})"
+        )
+        command = [
+            *compose_command(), "--profile", "services", "run", "--rm", "--no-deps",
+            "--entrypoint", "python", "voice", "-c", code,
+        ]
+        code_value, out = await run_command(command, ctx=ctx, timeout=12 * 3600, stage_label="Downloading model")
+        lines.extend(out)
+        if code_value != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "OmniVoice download failed")
+
+    elif kind == "diffusers":
+        await _ensure_service_image("imagegen", ctx)
+        repo = str(item.get("repo") or "")
+        code = f"from huggingface_hub import snapshot_download; snapshot_download({repo!r})"
+        command = [
+            *compose_command(), "--profile", "services", "run", "--rm", "--no-deps",
+            "--entrypoint", "python", "imagegen", "-c", code,
+        ]
+        code_value, out = await run_command(command, ctx=ctx, timeout=24 * 3600, stage_label="Downloading model")
+        lines.extend(out)
+        if code_value != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "Diffusers download failed")
+
+    elif kind == "qvac":
+        await _ensure_service_image("qvac", ctx)
+        up_command = [*compose_command(), "--profile", "services", "up", "-d", "--no-deps", "qvac"]
+        code, out = await run_command(up_command, ctx=ctx, timeout=900, stage_label="Starting")
+        lines.extend(out)
+        if code != 0:
+            raise RuntimeError("\n".join(out[-30:]) or "Could not start QVAC")
+        await ctx.report(12.0, "Downloading model", "QVAC is loading and caching the model")
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=20.0, read=24 * 3600, write=60.0, pool=20.0),
+            headers=jobhub_headers(),
+        ) as client:
+            response = await client.post(
+                f"{QVAC_URL}/api/qvac/models/load",
+                json={"modelSrc": str(item.get("source") or "")},
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(f"QVAC rejected the model ({response.status_code}): {response.text[:800]}")
+        lines.append(f"QVAC loaded {item.get('source')}")
+
+    else:
+        raise ValueError(f"Unsupported model kind: {kind}")
+
+    await ctx.report(98.0, "Verifying", "Checking installed model files")
+    status = await model_status(item)
+    if not status["installed"]:
+        raise RuntimeError(f"Download finished but verification failed: {status['detail']}")
+    await ctx.report(100.0, "Complete", f"{item['label']} installed")
+    return {
+        "message": f"{item['label']} installed.",
+        "data": {"model": status, "output": lines[-30:]},
+    }
 
 
 def container_maps(containers: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -272,6 +871,60 @@ async def services_payload() -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def _model_groups(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order = ["Language", "Music", "Voice", "Subtitles", "Text", "Images", "QVAC"]
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        grouped.setdefault(str(item.get("group") or "Other"), []).append(item)
+    return [
+        {"group": group, "items": grouped[group]}
+        for group in order + sorted(set(grouped) - set(order))
+        if group in grouped
+    ]
+
+
+async def submit_model_job(item: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "component": "models",
+        "action": "install_model",
+        "title": f"Install model · {item['label']}",
+        "params": {"model_id": item["id"]},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0, headers=jobhub_headers()) as client:
+            response = await client.post(f"{JOBHUB_URL}/api/jobs", json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Job hub unreachable: {exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=response.text[:1000] or "Could not create model job")
+    return response.json()
+
+
+@router.get("/models")
+async def list_models() -> dict[str, Any]:
+    items = await asyncio.gather(*(model_status(item) for item in MODEL_ITEMS))
+    groups = _model_groups(list(items))
+    return {
+        "items": list(items),
+        "groups": groups,
+        "total": len(items),
+        "installed": sum(1 for item in items if item.get("installed")),
+        "generated_at": utc_now(),
+    }
+
+
+@router.post("/models/{model_id}/install")
+async def install_model(model_id: str, force: bool = False) -> dict[str, Any]:
+    item = next((entry for entry in MODEL_ITEMS if entry["id"] == model_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Unknown model pack")
+    status = await model_status(item)
+    if status.get("installed") and not force:
+        return {"item": status, "job": None, "message": "Model is already installed; use Re-check to verify it"}
+    job = await submit_model_job(item)
+    return {"item": status, "job": job, "message": f"{item['label']} download queued"}
 
 
 @router.get("/services")
@@ -356,7 +1009,7 @@ async def delete_all_files(payload: dict[str, Any]) -> dict[str, Any]:
             removed += 1
         except OSError:
             log.warning("Could not remove %s", child, exc_info=True)
-    for name in ("music", "video", "voice", "voices", "documents", "images", "subtitles", "ffmpeg", "ytdlp", "qvac", "uploads", "tmp"):
+    for name in ("music", "dj", "video", "voice", "voices", "documents", "images", "subtitles", "ffmpeg", "ytdlp", "qvac", "uploads", "tmp"):
         (root / name).mkdir(parents=True, exist_ok=True)
     return {"removed": removed, "bytes_freed": freed, "root": str(root), "deleted_at": utc_now()}
 
@@ -374,11 +1027,16 @@ async def _control_locked(ctx: JobContext) -> dict[str, Any]:
         service_cfg = (configured.get("services") or {}).get(name) or {}
         image = str(service_cfg.get("image") or "")
         built = await image_exists(image) if image else False
-        command = [*compose_command(), "--profile", "services", "up", "-d"]
+        dependencies = required_services(name, configured.get("services") or {})
+        # --no-deps keeps Compose from touching the always-on core (most
+        # importantly jobhub) just because it is listed as a dependency.
+        command = [*compose_command(), "--profile", "services", "up", "-d", "--no-deps"]
         if not built:
             command.append("--build")
             await ctx.report(4.0, "Building", f"Image for {name} is missing; building it now")
-        command += ["--remove-orphans", name]
+        if dependencies:
+            await ctx.report(3.0, "Starting", f"Required services: {', '.join(dependencies)}")
+        command += [*dependencies, name]
         code, lines = await run_command(command, ctx=ctx)
         if code != 0:
             raise RuntimeError("\n".join(lines[-30:]) or "docker compose up failed")
@@ -417,6 +1075,7 @@ async def _control(ctx: JobContext) -> dict[str, Any]:
 
 for _action in ("enable", "disable", "build", "restart"):
     runner.register(_action, _control)
+runner.register("install_model", _install_model)
 
 
 app = create_service_app(
