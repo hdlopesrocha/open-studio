@@ -6,11 +6,11 @@ Every model runs locally in Docker. Every sub-page shares one file tree, one des
 ```
 Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
                               │
-                              ├── Job Hub ── per-component queues × 13
+                              ├── Job Hub ── per-component queues × 16
                               ├── Shared Files (/data/files)
-                              └── Micro-services (music, video, voice, SRT, images,
-                                   documents, translation, summary, PDF, FFmpeg,
-                                   yt-dlp, QVAC, LLM)
+                              └── Micro-services (chat, music, DJ, video, voice, SRT,
+                                   images, documents, translation, summary, PDF,
+                                   FFmpeg, yt-dlp, QVAC, LLM)
 ```
 
 ---
@@ -45,14 +45,15 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 
 | Area | Functionality |
 |---|---|
-| **Music** | ACE-Step 1.5 text-to-music, full songs, vocals/instrumental, structured lyrics, LLM lyric drafts, repaint, cover, extend, reference audio, variations, seeds, steps, guidance, BPM, duration, language, exports, project/song library and takes. |
+| **Chat** | Persistent local ChatGPT-style sessions and conversations backed by Ollama through the LLM bridge. Session sidebar, rename/delete, model selector, copy, AI workspace presets and authenticated REST API; messages are stored in `data/state/chat.db`. |
+| **Music + DJ** | ACE-Step 1.5 songs, structured lyrics, LLM drafts, takes and exports, plus DJ Library/Create/Mix tabs for analysis, style models, AI arrangements, beat-matched multi-section mix scenes and effects. Section-aware shared player, lyric section seeking, complete-lyrics copy and SRT export. |
 | **Video** | Audio + SRT → analysed timeline → scene plan → procedural / Diffusers / ComfyUI / QVAC artwork → FFmpeg or OpenCV animation → styled subtitles → final MP4/MKV. Scene editor, timeline, image variants, depth maps, audio-reactive effects, pause/cancel, export panel. |
 | **Voice** | OmniVoice zero-shot cloning, voice design by attributes, auto voice, Whisper transcription, 646 languages, Piper built-in voices, batch synthesis, retraining, export/import, previews, history. All TTS runs in Docker. |
 | **Subtitles** | MP3 + lyrics → frame-accurate SRT using Whisper word timestamps and dynamic-programming lyric alignment. Transcribe, from-text timing, SRT/VTT/ASS conversion, editable cue table, optional cue translation. |
 | **Images** | Unified picture generation with procedural, Diffusers, ComfyUI and QVAC providers. Text-to-image, image-to-image, upscaling, batches, seeds, samplers, LoRA, metadata sidecars and gallery. |
-| **Documents** | PDF or text → OCR → translate → summarise → narrate → SRT/VTT → manifest + ZIP. Editable artifacts and PDF page previews. |
+| **Documents** | PDF or text → OCR → translate → summarise → narrate → SRT/VTT → manifest + ZIP. Editable artifacts, PDF page previews and an integrated Summary tab alongside the PDF tools. |
 | **Translation** | One shared service for every page: OPUS-MT pt↔en, optional NLLB-200, detection, segments/page markers, glossaries, markup preservation, sync or job mode. |
-| **Summary** | Hierarchical T5 summaries in English/Portuguese with short/medium/long budgets and cross-language output. |
+| **Summary** | Hierarchical T5 summaries in English/Portuguese, available as a tab inside Documents. |
 | **FFmpeg** | 20+ operations in its own image: transcode, extract audio, trim, crop video/image, scale, rotate, concat, overlay, burn subtitles, frames, GIF, merge/replace audio, speed, volume, loudnorm, thumbnails, split, raw argv. Probe, progress and cancellation. |
 | **yt-dlp** | Its own image and a full web UI/REST API: analyse formats, playlists, search, subtitles, thumbnails, metadata, audio extraction, cookies, SponsorBlock, rate limits, retries, proxies, archives and more. |
 | **QVAC** | Tether QVAC SDK in Docker: WAN 2.1/2.2, LTX-2 and MiniMax-H3 text-to-video and image-to-video, QVAC diffusion images, ESRGAN upscaling, model lifecycle, all SDK knobs, mock mode for hardware-free demos. |
@@ -75,6 +76,8 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 | separate file stores | `files` — one `/data/files` tree mounted into every container |
 | static auth tokens in micro-talk | `gateway` — first-run password, sessions and API keys |
 | lyrics/video LLM clients | `llm` — one OpenAI-compatible bridge to Ollama or any compatible endpoint |
+| duplicate music/DJ players | `SectionPlayer` — one waveform/section player used by Music and DJ |
+| separate summary page | Documents → Summary tab — same service and artifacts without a second top-level workspace |
 
 ---
 
@@ -239,10 +242,11 @@ The service manager is reached through the authenticated gateway at
 `/api/admin/services`; it uses the repository and Compose file mounted read-only
 inside the container and builds into the host Docker daemon.
 
-### DJ Studio
+### DJ Studio (inside Music)
 
-Enable **DJ Studio** in Settings → Services, then open `/dj`. It is a
-self-contained crate-digging and mix workspace:
+Enable **DJ Studio** in Settings → Services, then open **Music → DJ Library**,
+**DJ Create** or **DJ Mix** (`/dj` redirects into Music). It is a self-contained
+crate-digging and mix workspace:
 
 - **Library** — upload WAV/MP3/FLAC/M4A/OGG/OPUS files; analysis extracts BPM,
   musical key + Camelot code, style confidence, mood, energy, danceability,
@@ -269,7 +273,8 @@ self-contained crate-digging and mix workspace:
 
 DJ state is stored in `data/state/dj.db`; uploads and renders live under
 `data/files/dj/`. The service is CPU-friendly and does not require the
-ACE-Step engine.
+ACE-Step engine. Music and DJ share the same section-aware player component and
+section/classification colours.
 
 ### Persistent state
 
@@ -624,7 +629,9 @@ The job result contains `images[].path`, thumbnails and sidecars, all usable fro
 ![Documents](docs/screenshots/documents.png)
 
 The document pipeline joins the **PDF**, **translation**, **summary**, **voice** and
-**FFmpeg** services. It accepts a PDF from Files or pasted text.
+**FFmpeg** services. It accepts a PDF from Files or pasted text. Use the
+**Summary** tab alongside **PDF tools** for standalone summaries; `/summary`
+redirects to `Documents → Summary`.
 
 **Concrete example — annual report → Portuguese narration + subtitles**
 
@@ -971,7 +978,8 @@ curl -OJ -H 'Authorization: Bearer osk_...' \
 | `/api/jobs/*` | Job hub | `POST /api/jobs` |
 | `/api/files/*` | Shared files | `GET /api/files/list` |
 | `/api/admin/*` | Service manager | `GET /api/admin/services`, `POST /api/admin/services/{name}/enable` |
-| `/api/music/*` | Music | `POST /api/music/songs/{id}/generate` |
+| `/api/chat/*` | Chat | `POST /api/chat/sessions`, `POST /api/chat/sessions/{id}/messages` |
+| `/api/music/*` | Music | `POST /api/music/songs/{id}/generate`, `GET /api/music/songs/{id}/lyrics.srt` |
 | `/api/dj/*` | DJ Studio | `POST /api/dj/tracks`, `POST /api/dj/mixes/{id}/scene`, `POST /api/dj/mixes/{id}/render` |
 | `/api/video/*` | Video | `POST /api/video/projects/{id}/run` |
 | `/api/voice/*` | Voice/TTS | `POST /api/voice/tts`, `POST /api/voice/v1/audio/speech` |
@@ -1091,6 +1099,7 @@ first enable in Settings builds that image, then caches it for later toggles.
 | `gateway` | `openstudio/gateway` | `127.0.0.1:8091:8000` | Auth, status, reverse proxy |
 | `jobhub` | `openstudio/jobhub` | internal | Global job queues + SSE |
 | `files` | `openstudio/files` | internal | Shared storage API |
+| `chat` | `openstudio/chat` | internal | Persistent local chat sessions + REST API |
 | `llm` | `openstudio/llm` | internal | OpenAI-compatible bridge |
 | `ollama` | `ollama/ollama` | internal | Local LLM runtime |
 | `music` | `openstudio/music` | internal | Projects/songs/lyrics/takes |
@@ -1260,11 +1269,15 @@ make verify        # against a running stack (set OPENSTUDIO_PASSWORD)
 make screenshots   # demo build + headless Chrome capture
 ```
 
-Backend tests cover shared path safety, SRT round-trips, password/session/API-key
-security, job persistence, the service-manager dependency planner and DJ
-arrangement/style-model/effect smoke tests. The full stack was smoke-tested for auth, files,
-jobs, image generation, document pipelines, FFmpeg extraction, music project
-creation and video project creation.
+Backend tests currently cover 77 cases across shared path safety, chat
+sessions/messages with a mocked LLM, password/session/API-key security, job
+persistence, the service-manager dependency planner, music project/song/lyrics
+CRUD, lyric SRT timing/export, PDF extraction (real generated PDF), SRT/VTT/ASS
+round-trips, FFmpeg audio extraction with real media, yt-dlp command/validation
+helpers, video catalog/project storage, DJ arrangement/style-model/effect smoke
+tests and an end-to-end synthetic DJ mix render. The full stack has been
+smoke-tested for auth, files, jobs, image generation, document pipelines, music
+SRT export and real local chat against llama3.2:3b.
 
 All service images were built successfully during validation. The always-on
 core (`gateway`, `files`, `jobhub`, `admin`, `frontend`) plus `ffmpeg`, `ytdlp`,
@@ -1308,6 +1321,7 @@ open-studio/
 │   ├── gateway/                 # auth, sessions, keys, status, proxy
 │   ├── jobhub/                  # global queues + SSE + SQLite
 │   ├── files/                   # shared file explorer API
+│   ├── chat/                    # persistent local chat sessions + REST API
 │   ├── llm/                     # OpenAI-compatible bridge
 │   ├── music/                   # music projects/songs/lyrics/takes
 │   ├── dj/                      # analysis, style models, synth, mix scenes, effects
