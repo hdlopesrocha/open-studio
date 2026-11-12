@@ -9,6 +9,7 @@ export const demoStatus: SystemStatus = {
   app: { name: "Open Studio", version: "1.0.0", uptime_seconds: 18432 },
   setup_required: false,
   services: [
+    ["chat", "Chat", "core"],
     ["music", "Music", "create"],
     ["dj", "DJ Studio", "create"],
     ["video", "Video", "create"],
@@ -35,8 +36,8 @@ export const demoStatus: SystemStatus = {
     latency_ms: 6 + index * 3,
     detail: name as string,
   })),
-  online: 16,
-  total: 16,
+  online: 17,
+  total: 17,
   queues: {
     components: [
       ["music", 1, 0, 0],
@@ -634,6 +635,7 @@ export const demoServices = {
     { name: "admin", label: "Service Manager", description: "On-demand builds and health", group: "Core", core: true, enabled: true, running: true, state: "running", health: "healthy", image_built: true, requires: [], image: "openstudio/admin", container: "openstudio-admin", status: "Up" },
     { name: "gateway", label: "Gateway", description: "Auth and API proxy", group: "Core", core: true, enabled: true, running: true, state: "running", health: "healthy", image_built: true, requires: [], image: "openstudio/gateway", container: "openstudio-gateway", status: "Up" },
     { name: "frontend", label: "Frontend", description: "Vue app", group: "Core", core: true, enabled: true, running: true, state: "running", health: "healthy", image_built: true, requires: [], image: "openstudio/frontend", container: "openstudio-frontend", status: "Up" },
+    { name: "chat", label: "Chat", description: "Persistent local ChatGPT-style conversations", group: "Core AI", core: true, enabled: true, running: true, state: "running", health: "healthy", image_built: true, requires: ["llm"], image: "openstudio/chat", container: "openstudio-chat", status: "Up" },
     { name: "music", label: "Music Studio", description: "ACE-Step songs, lyrics and takes", group: "Create", core: false, enabled: true, running: true, state: "running", health: "healthy", image_built: true, requires: ["music-engine"], image: "openstudio/music", container: "openstudio-music", status: "Up" },
     { name: "music-engine", label: "ACE-Step Engine", description: "GGUF/C++ music inference", group: "Engines", core: false, enabled: true, running: true, state: "running", health: "healthy", image_built: true, requires: [], image: "openstudio/music-engine", container: "openstudio-music-engine", status: "Up" },
     { name: "dj", label: "DJ Studio", description: "Analysis, style models, AI arrangements and mix scenes", group: "Create", core: false, enabled: true, running: true, state: "running", health: "healthy", image_built: true, requires: [], image: "openstudio/dj", container: "openstudio-dj", status: "Up" },
@@ -651,9 +653,9 @@ export const demoServices = {
     { name: "llm", label: "LLM Bridge", description: "OpenAI-compatible bridge", group: "Core AI", core: false, enabled: true, running: true, state: "running", health: "healthy", image_built: true, requires: ["ollama"], image: "openstudio/llm", container: "openstudio-llm", status: "Up" },
     { name: "ollama", label: "Ollama", description: "Local LLM runtime", group: "Core AI", core: false, enabled: false, running: false, state: "absent", health: "disabled", image_built: true, requires: [], image: "ollama/ollama", container: "", status: "disabled" },
   ],
-  enabled: 14,
-  running: 14,
-  total: 21,
+  enabled: 15,
+  running: 15,
+  total: 22,
 };
 
 export const demoSystemInfo = {

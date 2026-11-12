@@ -7,12 +7,12 @@ import {
   Captions,
   Clapperboard,
   Cpu,
-  Disc3,
   DownloadCloud,
   FileText,
   FolderOpen,
   HardDrive,
   Image,
+  MessageSquare,
   Mic2,
   Music2,
   Sparkles,
@@ -55,15 +55,15 @@ onMounted(async () => {
 const status = computed(() => system.status || (DEMO ? demoStatus : null));
 const recentJobs = computed(() => jobs.recent.slice(0, 3));
 const quick = [
-  { to: "/music", label: "Compose a song", detail: "ACE-Step 1.5 · lyrics · repaint", icon: Music2, tone: "violet" },
-  { to: "/dj", label: "Build a DJ set", detail: "Analyse · style models · mix scenes", icon: Disc3, tone: "cyan" },
+  { to: "/chat", label: "Talk to the studio", detail: "Sessions · conversations · AI workspaces", icon: MessageSquare, tone: "violet" },
+  { to: "/music", label: "Compose or mix", detail: "ACE-Step · DJ analysis · mix scenes", icon: Music2, tone: "cyan" },
   { to: "/video", label: "Make a music video", detail: "Scenes · animation · subtitles", icon: Clapperboard, tone: "cyan" },
   { to: "/voice", label: "Clone a voice", detail: "OmniVoice · Piper · 646 languages", icon: Mic2, tone: "amber" },
   { to: "/subtitles", label: "Align lyrics to SRT", detail: "Whisper · DP alignment · VTT", icon: Captions, tone: "green" },
   { to: "/images", label: "Generate artwork", detail: "Diffusers · ComfyUI · QVAC", icon: Image, tone: "pink" },
   { to: "/ffmpeg", label: "Process media", detail: "Trim · crop · concat · transcode", icon: Terminal, tone: "slate" },
   { to: "/ytdlp", label: "Download a source", detail: "yt-dlp · playlists · subtitles", icon: DownloadCloud, tone: "blue" },
-  { to: "/documents", label: "Translate a document", detail: "PDF · OCR · summary · narration", icon: FileText, tone: "orange" },
+  { to: "/documents", label: "Process a document", detail: "PDF · OCR · summary · narration", icon: FileText, tone: "orange" },
 ];
 const kindEntries = computed(() => Object.entries(kinds.value).sort((a, b) => b[1].size - a[1].size));
 const totalFiles = computed(() => kindEntries.value.reduce((sum, [, value]) => sum + value.files, 0));
@@ -205,7 +205,7 @@ function shortSize(bytes: number) {
     <div class="row" style="margin-top: 18px; gap: 8px">
       <RouterLink to="/voice" class="chip"><Mic2 :size="11" /> Voice</RouterLink>
       <RouterLink to="/translate" class="chip">Translate</RouterLink>
-      <RouterLink to="/summary" class="chip">Summary</RouterLink>
+      <RouterLink to="/documents" class="chip">Summary</RouterLink>
       <RouterLink to="/qvac" class="chip"><Sparkles :size="11" /> QVAC video</RouterLink>
       <span class="chip" style="margin-left: auto">v{{ status?.app?.version || "1.0.0" }} · up {{ Math.floor((status?.app?.uptime_seconds || 0) / 3600) }}h</span>
     </div>

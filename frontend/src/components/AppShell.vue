@@ -3,10 +3,8 @@ import { computed, onBeforeUnmount, onMounted } from "vue";
 import { RouterLink, RouterView, useRouter } from "vue-router";
 import {
   Activity,
-  AlignLeft,
   Captions,
   Clapperboard,
-  Disc3,
   DownloadCloud,
   FileText,
   Film,
@@ -15,6 +13,7 @@ import {
   Languages,
   LayoutDashboard,
   LogOut,
+  MessageSquare,
   Mic2,
   Music2,
   Settings2,
@@ -37,15 +36,14 @@ const router = useRouter();
 
 const nav = [
   { to: "/", label: "Home", icon: LayoutDashboard },
+  { to: "/chat", label: "Chat", icon: MessageSquare },
   { to: "/music", label: "Music", icon: Music2 },
-  { to: "/dj", label: "DJ", icon: Disc3 },
   { to: "/video", label: "Video", icon: Clapperboard },
   { to: "/voice", label: "Voice", icon: Mic2 },
   { to: "/subtitles", label: "SRT", icon: Captions },
   { to: "/images", label: "Images", icon: Image },
   { to: "/documents", label: "Docs", icon: FileText },
   { to: "/translate", label: "Translate", icon: Languages },
-  { to: "/summary", label: "Summary", icon: AlignLeft },
   { to: "/ffmpeg", label: "FFmpeg", icon: Terminal },
   { to: "/ytdlp", label: "yt-dlp", icon: DownloadCloud },
   { to: "/qvac", label: "QVAC", icon: Sparkles },
