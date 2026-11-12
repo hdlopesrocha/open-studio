@@ -20,7 +20,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY services/qvac/package.json services/qvac/package-lock.json* /app/
-RUN if [ -f /app/package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+# npm sometimes skips this optional platform package in CI. The native
+# diffusion addon is required for QVAC image/video generation.
+RUN if [ -f /app/package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi \
+    && npm install --no-save --omit=dev @qvac/diffusion-cpp-linux-x64@0.31.0
 
 COPY services/qvac /app
 

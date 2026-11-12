@@ -18,6 +18,7 @@ log = logging.getLogger("imagegen.qvac")
 
 QVAC_URL = env("QVAC_URL", service_url("qvac")).rstrip("/")
 IMAGE_ENDPOINT = env("QVAC_IMAGE_ENDPOINT", "/api/qvac/image")
+DEFAULT_IMAGE_MODEL = env("QVAC_IMAGE_MODEL", "SD_V2_1_1B_Q4_0").strip()
 POLL_INTERVAL = max(0.5, float(env("QVAC_POLL_INTERVAL", "2.0")))
 TIMEOUT = max(30.0, float(env("QVAC_IMAGE_TIMEOUT", "1200")))
 _TERMINAL_OK = {"completed", "complete", "succeeded", "success", "done", "finished"}
@@ -175,7 +176,7 @@ async def generate(
         "batch_count": int(params.get("batch_count") or 1),
         "sampling_method": params.get("sampler") or params.get("sampling_method"),
         "upscale": params.get("upscale"),
-        "model": params.get("model") or None,
+        "model": params.get("model") or DEFAULT_IMAGE_MODEL or None,
         "init_image": params.get("init_image"),
         "init_images": params.get("init_images"),
     }

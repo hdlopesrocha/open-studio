@@ -32,7 +32,14 @@ async function getSdk() {
 
 function sdkConstants(sdk) {
   return Object.keys(sdk)
-    .filter((key) => /^[A-Z][A-Z0-9_]{2,}$/.test(key) && typeof sdk[key] === 'string')
+    .filter((key) => /^[A-Z][A-Z0-9_]{2,}$/.test(key))
+    .filter((key) => {
+      const value = sdk[key];
+      // Plugin constants are strings. Model constants are descriptor
+      // objects such as SD_V2_1_1B_Q8_0, which the SDK expects to receive
+      // directly as modelSrc during loadModel().
+      return typeof value === 'string' || Boolean(value && typeof value === 'object' && value.src);
+    })
     .sort();
 }
 
@@ -317,6 +324,11 @@ async function ensureModel(params, ctx, kind) {
   if (!loadPayload.modelSrc && params.model) loadPayload.modelSrc = params.model;
   if (params.family) loadPayload.family = params.family;
   if (!loadPayload.modelSrc) throw new HttpError(422, 'Provide model_id or a model/model_config.modelSrc');
+  const requested = String(loadPayload.modelSrc);
+  for (const entry of LOADED.values()) {
+    if (entry.kind && entry.kind !== kind) continue;
+    if (String(entry.modelName) === requested) return entry;
+  }
   if (kind === 'image' && params.init_image) {
     const family = loadPayload.family || (params.model && require('./catalog').familyForModel(params.model));
     if (family === 'flux2_klein') loadPayload.prediction = loadPayload.prediction || 'flux2_flow';

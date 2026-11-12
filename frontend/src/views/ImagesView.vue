@@ -280,9 +280,28 @@ function applySize(preset: any) {
   form.height = preset.height;
 }
 
+function applyModelDefaults(model: any) {
+  const defaults = model?.defaults;
+  if (!defaults) return;
+  if (defaults.width) form.width = Number(defaults.width);
+  if (defaults.height) form.height = Number(defaults.height);
+  if (defaults.steps) form.steps = Number(defaults.steps);
+  if (defaults.guidance !== undefined && defaults.guidance !== null) form.guidance = Number(defaults.guidance);
+  if (defaults.cfg_scale !== undefined && defaults.cfg_scale !== null) form.cfg_scale = Number(defaults.cfg_scale);
+  if (defaults.batch_count) form.batch_count = Number(defaults.batch_count);
+}
+
 function changeProvider() {
   const options = providerModels.value;
-  if (options.length) form.model = options[0].id;
+  if (options.length) {
+    form.model = options[0].id;
+    applyModelDefaults(options[0]);
+  }
+}
+
+function changeModel() {
+  const model = providerModels.value.find((entry: any) => entry.id === form.model);
+  applyModelDefaults(model);
 }
 
 function normalizeImage(item: any) {
@@ -317,6 +336,7 @@ function buildPayload(mode: "generate" | "img2img") {
     sampler: form.sampler,
     scheduler: form.scheduler || null,
     output_format: form.output_format,
+    allow_fallback: form.provider !== "qvac",
     style: form.provider === "procedural" ? form.model.split(":").pop() : undefined,
   };
   if (mode === "img2img") {
@@ -817,7 +837,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="field">
                 <label>Model</label>
-                <select v-model="form.model" class="select">
+                <select v-model="form.model" class="select" @change="changeModel">
                   <option v-for="model in providerModels" :key="model.id" :value="model.id">{{ model.name }}</option>
                 </select>
                 <span class="hint">{{ providerModels.find((model: any) => model.id === form.model)?.detail || "Model defaults" }}</span>

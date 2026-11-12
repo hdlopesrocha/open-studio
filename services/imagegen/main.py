@@ -323,7 +323,8 @@ async def models() -> dict[str, Any]:
                 "available": True,
                 "downloaded": True,
                 "requires_download": False,
-                "defaults": {"width": 1024, "height": 1024, "steps": 28, "guidance": 7.0},
+                "detail": "CPU-friendly defaults: 512×512, 4 steps, batch 1. Increase only if you can wait.",
+                "defaults": {"width": 512, "height": 512, "steps": 4, "guidance": 1.0, "cfg_scale": 1.0, "batch_count": 1},
             }
         )
     return {
@@ -499,7 +500,9 @@ async def job_generate(ctx: JobContext) -> dict[str, Any]:
         result = await generate_images(params, on_poll=on_poll)
     except Exception as exc:  # noqa: BLE001
         provider_failed = str(exc) or exc.__class__.__name__
-        if not request.allow_fallback:
+        # Explicit QVAC requests must surface the real failure. Procedural art
+        # is not a substitute when the user selected QVAC.
+        if not request.allow_fallback or request.provider == "qvac":
             raise HTTPException(status_code=503, detail=f"Image generation failed: {provider_failed}") from exc
         warnings.append(f"{request.provider} generation failed ({provider_failed}); procedural fallback was used.")
         log.info("Falling back to procedural image generation: %s", provider_failed)
