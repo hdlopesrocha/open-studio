@@ -216,12 +216,31 @@ async def health() -> dict[str, Any]:
         if not isinstance(body, dict):
             body = {}
         reachable = bool(body.get("reachable"))
+        model = str(LLM_MODEL or body.get("model") or "llama3.2:3b")
+        models = body.get("models") or []
+        model_ids = [str(item.get("id") or "") for item in models if isinstance(item, dict)]
+        detail = body.get("error") or ("LLM ready." if reachable else "The local LLM backend is offline.")
+        if reachable and models and model:
+            if not any(candidate == model or candidate.startswith(model) or model in candidate for candidate in model_ids):
+                reachable = False
+                detail = (
+                    f"The local LLM is reachable but model '{model}' is not installed. "
+                    f"Run: make models-llm (or: ollama pull {model})."
+                )
+        elif reachable and not models:
+            base_url = str(body.get("base_url") or "")
+            if "11434" in base_url or "ollama" in base_url.lower():
+                reachable = False
+                detail = (
+                    f"Ollama is reachable but no model is installed. "
+                    f"Run: make models-llm (or: ollama pull {model})."
+                )
         return {
             "reachable": reachable,
-            "status": body.get("status") or ("ok" if reachable else "offline"),
-            "model": body.get("model"),
-            "models": body.get("models") or [],
-            "detail": body.get("error") or ("LLM ready." if reachable else "The local LLM backend is offline."),
+            "status": "model-missing" if reachable is False and "not installed" in detail else (body.get("status") or ("ok" if reachable else "offline")),
+            "model": model,
+            "models": models,
+            "detail": detail,
         }
     except (httpx.HTTPError, ValueError) as exc:
         return {"reachable": False, "status": "offline", "detail": str(exc)}
@@ -259,6 +278,16 @@ async def _complete(prompt: str, *, temperature: float) -> dict[str, Any]:
         ) from exc
     if response.status_code >= 400:
         detail = response.text[:500] if response.text else f"HTTP {response.status_code}"
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                value = body.get("detail") or body.get("error") or body.get("message")
+                if isinstance(value, dict):
+                    value = value.get("message") or value.get("detail")
+                if value:
+                    detail = str(value)[:1000]
+        except (ValueError, TypeError):
+            pass
         raise LyricsUnavailable(f"The local lyricist returned HTTP {response.status_code}: {detail}")
     try:
         body = response.json()

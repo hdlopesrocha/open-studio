@@ -54,15 +54,30 @@ async def llm_health() -> dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=3.0, headers=headers()) as client:
             response = await client.get(f"{BASE_URL}/models")
-            return {
-                "status": "ok" if response.status_code == 200 else "degraded",
-                "base_url": BASE_URL,
-                "reachable": response.status_code == 200,
-                "model": DEFAULT_MODEL,
-                "models": await models(),
-            }
+        available = await models()
+        ready = response.status_code == 200 and bool(available)
+        return {
+            "status": "ok" if ready else ("degraded" if response.status_code == 200 else "offline"),
+            "base_url": BASE_URL,
+            "reachable": response.status_code == 200,
+            "model": DEFAULT_MODEL,
+            "models": available,
+            "model_installed": ready,
+            "detail": None if ready else (
+                f"No model is installed in the LLM backend. Run: make models-llm "
+                f"(or: ollama pull {DEFAULT_MODEL})."
+            ),
+        }
     except Exception as exc:  # noqa: BLE001
-        return {"status": "offline", "base_url": BASE_URL, "reachable": False, "model": DEFAULT_MODEL, "error": str(exc)}
+        return {
+            "status": "offline",
+            "base_url": BASE_URL,
+            "reachable": False,
+            "model": DEFAULT_MODEL,
+            "models": [],
+            "model_installed": False,
+            "error": str(exc),
+        }
 
 
 @app.get("/api/llm/models")
@@ -71,8 +86,7 @@ async def list_models() -> dict[str, Any]:
     return {"items": items, "default": DEFAULT_MODEL, "base_url": BASE_URL}
 
 
-@app.post("/api/llm/chat")
-async def chat(payload: dict[str, Any], request: Request):
+async def _chat(payload: dict[str, Any], request: Request | None = None):
     messages = payload.get("messages") or []
     if not messages and payload.get("prompt"):
         messages = [{"role": "user", "content": str(payload["prompt"])}]
@@ -102,7 +116,7 @@ async def chat(payload: dict[str, Any], request: Request):
         async def stream() -> AsyncIterator[bytes]:
             try:
                 async for chunk in upstream.aiter_raw():
-                    if await request.is_disconnected():
+                    if request is not None and await request.is_disconnected():
                         break
                     yield chunk
             finally:
@@ -116,13 +130,37 @@ async def chat(payload: dict[str, Any], request: Request):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"LLM unreachable: {exc}") from exc
     if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=response.text[:2000])
+        detail = response.text[:2000]
+        try:
+            body_error = response.json()
+            value = body_error.get("error") or body_error.get("detail") if isinstance(body_error, dict) else None
+            if isinstance(value, dict):
+                value = value.get("message") or value.get("detail")
+            if value:
+                detail = str(value)[:2000]
+        except (ValueError, TypeError):
+            pass
+        lowered = detail.lower()
+        if "model" in lowered and any(token in lowered for token in ("not found", "not installed", "pull")):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"The LLM model '{body['model']}' is not installed. "
+                    f"Run: make models-llm (or: ollama pull {body['model']}). {detail}"
+                ),
+            )
+        raise HTTPException(status_code=response.status_code, detail=detail)
     return response.json()
+
+
+@app.post("/api/llm/chat")
+async def chat(payload: dict[str, Any], request: Request):
+    return await _chat(payload, request)
 
 
 @app.post("/api/llm/complete")
 async def complete(payload: dict[str, Any]) -> dict[str, Any]:
-    result = await chat({"messages": [{"role": "user", "content": payload.get("prompt", "")}], **payload})
+    result = await _chat({"messages": [{"role": "user", "content": payload.get("prompt", "")}], **payload})
     choices = result.get("choices") or []
     return {
         "text": (choices[0].get("message", {}).get("content") if choices else "") or "",
