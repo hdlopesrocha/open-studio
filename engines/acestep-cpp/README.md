@@ -24,14 +24,15 @@ music-engine:
     test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8085/health >/dev/null || exit 1"]
     interval: 30s
     timeout: 10s
-    start_period: 30m
+    start_period: 60m
     retries: 5
 ```
 
-The container runs as uid/gid `10001`. Make sure the bind-mounted model
-directory is writable by that user on first start, or pre-populate
-`data/models/acestep` and set `ACESTEP_CPP_DOWNLOAD_MODELS=false`. The default
-Q8_0 set downloads about 7.7 GB (DiT, 5Hz LM, text encoder and VAE).
+Compose starts the container as root by default so it can create the
+`/data/models/acestep` directory on the shared bind mount. Set `ACESTEP_UID` /
+`ACESTEP_GID` when the model volume belongs to a non-root host user, or
+pre-populate `data/models/acestep` and set `ACESTEP_CPP_DOWNLOAD_MODELS=false`.
+The default Q8_0 set downloads about 7.7 GB (DiT, 5Hz LM, text encoder and VAE).
 
 The music service expects the engine at `http://music-engine:8085` by default
 (`ACESTEP_ENGINE_URL`). Open `http://localhost:8085/` for the engine's own

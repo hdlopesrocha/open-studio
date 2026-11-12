@@ -83,7 +83,7 @@ USER openstudio
 WORKDIR /opt/acestep
 EXPOSE 8085
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=1800s --retries=5 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=3600s --retries=5 \
     CMD curl -sf http://127.0.0.1:8085/health >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/opt/acestep/entrypoint.sh"]

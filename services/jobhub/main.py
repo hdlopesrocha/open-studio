@@ -40,6 +40,7 @@ JOB_TIMEOUT = env_int("JOB_TIMEOUT_SECONDS", 86_400)
 DEFAULT_COMPONENTS = {
     "admin": (8000, 1),
     "music": (8000, 1),
+    "dj": (8000, 1),
     "video": (8000, 2),
     "voice": (8000, 1),
     "srt": (8000, 1),
@@ -51,6 +52,7 @@ DEFAULT_COMPONENTS = {
     "ffmpeg": (8000, 2),
     "ytdlp": (8000, 2),
     "qvac": (8000, 1),
+    "models": (8000, 1),
     "llm": (8000, 2),
 }
 

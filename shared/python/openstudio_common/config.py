@@ -87,6 +87,7 @@ MAX_UPLOAD_MB = env_int("MAX_UPLOAD_MB", 4096)
 # Every service writes user-facing files under one shared tree.
 KIND_DIRS = {
     "music": "music",
+    "dj": "dj",
     "video": "video",
     "voice": "voice",
     "voices": "voices",

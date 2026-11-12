@@ -11,7 +11,7 @@ WHISPER_MODEL ?= large-v3
 OLLAMA_MODEL ?= llama3.2:3b
 OPENSTUDIO_PORT ?= 8090
 
-.PHONY: help init build up up-cpu up-gpu up-vulkan up-all down fix-perms stop restart ps logs wait health status config shell \
+.PHONY: help init build rebuild up up-cpu up-gpu up-vulkan up-all down fix-perms stop restart ps logs wait health status config shell \
         models models-all models-llm models-music models-whisper models-text models-piper models-images models-qvac \
         gpu-info test test-backend test-frontend screenshots demo backup reset clean pull update api-url \
         verify compose-config
@@ -22,14 +22,24 @@ help: ## Show this help
 	@echo ""
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo ""
-	@echo "  First run:   make up          (builds and starts everything)"
+	@echo "  First run:   make up          (builds missing images and starts core)"
+	@echo "  Restart:     make up          (reuses images and persistent ./data)"
+	@echo "  Rebuild:     make rebuild     (after changing source code)"
 	@echo "  Then open:   http://localhost:$(OPENSTUDIO_PORT)"
 	@echo "  Set the password in the browser on first use."
 	@echo "  Models:      make models      (downloads LLM + music + text + whisper + piper)"
 	@echo ""
 
-init: ## Create ./data, .env and a random INTERNAL_TOKEN if missing
-	@mkdir -p data/files data/state data/cache data/models data/artifacts data/exports data/home
+init: ## Create ./data, seed initial_data, .env and a random INTERNAL_TOKEN
+	@mkdir -p data 2>/dev/null || true
+	@if [ -d initial_data ] && [ ! -f data/.initialized ]; then \
+		if [ -z "$$(find data -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then \
+			echo "Seeding initial state from initial_data/"; \
+			cp -a initial_data/. data/ 2>/dev/null || echo "Warning: could not seed initial_data (check data ownership)"; \
+		fi; \
+	fi
+	@for directory in files state cache models artifacts exports home; do mkdir -p "data/$$directory" 2>/dev/null || true; done
+	@touch data/.initialized 2>/dev/null || true
 	@if [ ! -f .env ]; then \
 		cp .env.example .env; \
 		TOKEN=$$(openssl rand -hex 32 2>/dev/null || $(PY) -c "import secrets; print(secrets.token_hex(32))"); \
@@ -37,8 +47,9 @@ init: ## Create ./data, .env and a random INTERNAL_TOKEN if missing
 		echo "Created .env with a random INTERNAL_TOKEN."; \
 	fi
 	@$(PY) -c "import pathlib,sys,re; p=pathlib.Path('.env'); s=p.read_text(); key='OPENSTUDIO_DATA_DIR'; val=sys.argv[1]; s=re.sub(r'^'+key+r'=.*$$', key+'='+val, s, flags=re.M) if re.search(r'^'+key+r'=', s, re.M) else s+('\n' if not s.endswith('\n') else '')+key+'='+val+'\n'; key='OPENSTUDIO_REPO_DIR'; val=sys.argv[2]; s=re.sub(r'^'+key+r'=.*$$', key+'='+val, s, flags=re.M) if re.search(r'^'+key+r'=', s, re.M) else s+('\n' if not s.endswith('\n') else '')+key+'='+val+'\n'; p.write_text(s)" "$(CURDIR)/data" "$(CURDIR)"
-	@grep -q '^OPENSTUDIO_UID=' .env || echo "OPENSTUDIO_UID=$$(id -u)" >> .env
-	@grep -q '^OPENSTUDIO_GID=' .env || echo "OPENSTUDIO_GID=$$(id -g)" >> .env
+	@# The music engine uses ACESTEP_UID/GID (default root). Host-owned model
+	@# volumes can override them explicitly in .env; make init does not force
+	@# the host UID because core services create ./data as root.
 	@TOKEN=$$(grep '^INTERNAL_TOKEN=' .env | cut -d= -f2-); printf '%s' "$$TOKEN" > data/state/internal.token 2>/dev/null || true
 	@chmod 600 data/state/internal.token 2>/dev/null || true
 	@echo "Data directory: $(CURDIR)/data"
@@ -46,8 +57,8 @@ init: ## Create ./data, .env and a random INTERNAL_TOKEN if missing
 build: init ## Build the always-on core images (optional services are built on demand)
 	$(COMPOSE) build files jobhub admin gateway frontend
 
-up: init ## Build/start the core app; enable component services in Settings
-	COMPOSE_OVERRIDES= $(COMPOSE) up -d --build --force-recreate --remove-orphans files jobhub admin gateway frontend
+up: init ## Start/restart the core; reuse existing images and persistent data
+	COMPOSE_OVERRIDES= $(COMPOSE) --profile services up -d files jobhub admin gateway frontend
 	@echo ""
 	@echo "Open Studio core is starting."
 	@echo "  Web app:      http://localhost:$(OPENSTUDIO_PORT)"
@@ -63,17 +74,20 @@ up-gpu: init ## Start the core app with NVIDIA CUDA used for on-demand services
 	TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 \
 	VOICE_DEVICE=cuda WHISPER_DEVICE=cuda SRT_INSTALL_CUDA=1 QVAC_DEVICE=gpu \
 	COMPOSE_OVERRIDES="-f docker-compose.gpu.yml" \
-		$(COMPOSE) up -d --build --force-recreate --remove-orphans files jobhub admin gateway frontend
+		$(COMPOSE) --profile services up -d files jobhub admin gateway frontend
 	@echo "NVIDIA mode active. Enable services in Settings → Services; builds use the GPU override."
 
 up-vulkan: init ## Start the core app with AMD/Intel Vulkan for on-demand services
 	ACESTEP_VULKAN=1 QVAC_DEVICE=gpu \
 	COMPOSE_OVERRIDES="-f docker-compose.vulkan.yml" \
-		$(COMPOSE) up -d --build --force-recreate --remove-orphans files jobhub admin gateway frontend
+		$(COMPOSE) --profile services up -d files jobhub admin gateway frontend
 	@echo "Vulkan mode active. Enable services in Settings → Services; builds use the Vulkan override."
 
 up-all: init ## Start every service (no lazy loading)
-	$(COMPOSE) --profile services up -d --build --remove-orphans
+	$(COMPOSE) --profile services up -d
+
+rebuild: init ## Rebuild and recreate the core after a source update
+	COMPOSE_OVERRIDES= $(COMPOSE) --profile services up -d --build --force-recreate files jobhub admin gateway frontend
 
 down: ## Stop all containers (data is kept)
 	$(COMPOSE) --profile services down --remove-orphans
@@ -137,7 +151,7 @@ models-text: ## Download OPUS-MT + T5 translation/summary models
 	$(COMPOSE) --profile services run --rm --entrypoint download-models translation --models all
 	$(COMPOSE) --profile services run --rm --entrypoint download-models summary --models all
 
-models-piper: ## Download the five built-in Piper voices
+models-piper: ## Download the built-in Piper voices (US/UK/FR/DE/ES/PT)
 	$(COMPOSE) --profile services run --rm --entrypoint voice-download-models voice
 
 models-images: ## Warm the diffusers cache (optional; first generation downloads)
@@ -180,8 +194,7 @@ backup: ## Backup data/ to data/backups/openstudio-<timestamp>.tar.gz
 pull: ## Pull all third-party base images
 	$(COMPOSE) pull
 
-update: ## Rebuild after a git pull
-	$(COMPOSE) up -d --build --remove-orphans
+update: rebuild ## Rebuild after a git pull (alias)
 
 fix-perms: ## Fix ownership of ./data to the current host user
 	@sudo chown -R "$$(id -u):$$(id -g)" "$(CURDIR)/data" 2>/dev/null || chown -R "$$(id -u):$$(id -g)" "$(CURDIR)/data" 2>/dev/null || echo "Could not change ownership; run: sudo chown -R $$(id -u):$$(id -g) data"

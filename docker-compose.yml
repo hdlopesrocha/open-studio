@@ -72,12 +72,15 @@ services:
       VOICE_CONCURRENCY: ${VOICE_CONCURRENCY:-1}
       SRT_CONCURRENCY: ${SRT_CONCURRENCY:-1}
       IMAGEGEN_CONCURRENCY: ${IMAGEGEN_CONCURRENCY:-1}
+      DJ_CONCURRENCY: ${DJ_CONCURRENCY:-1}
       TRANSLATION_CONCURRENCY: ${TRANSLATION_CONCURRENCY:-2}
       SUMMARY_CONCURRENCY: ${SUMMARY_CONCURRENCY:-1}
       DOCS_CONCURRENCY: ${DOCS_CONCURRENCY:-2}
       FFMPEG_CONCURRENCY: ${FFMPEG_CONCURRENCY:-2}
       YTDLP_CONCURRENCY: ${YTDLP_CONCURRENCY:-2}
       QVAC_CONCURRENCY: ${QVAC_CONCURRENCY:-1}
+      MODELS_CONCURRENCY: ${MODELS_CONCURRENCY:-1}
+      MODELS_URL: http://admin:8000
       LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
@@ -142,7 +145,11 @@ services:
     container_name: openstudio-music-engine
     restart: unless-stopped
     networks: [studio]
-    user: "${OPENSTUDIO_UID:-1000}:${OPENSTUDIO_GID:-1000}"
+    # The shared data volume is normally owned by root because the other
+    # services run as root. The engine must be able to create
+    # /data/models/acestep; override ACESTEP_UID/GID when the volume is owned
+    # by a different host user.
+    user: "${ACESTEP_UID:-0}:${ACESTEP_GID:-0}"
     volumes:
       - ${OPENSTUDIO_DATA_DIR:-./data}/models:/data/models
       - ${OPENSTUDIO_DATA_DIR:-./data}/home:/data/home
@@ -163,8 +170,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      # First start may download several GB of GGUF weights.
-      start_period: 1800s
+      # First start may download several GB of GGUF weights. Do not report
+      # unhealthy while that one-time download is still in progress.
+      start_period: 3600s
 
   music:
     profiles: ["services"]
@@ -188,6 +196,32 @@ services:
       timeout: 5s
       retries: 8
       start_period: 20s
+
+  # ── DJ Studio ───────────────────────────────────────────────────────────
+  dj:
+    profiles: ["services"]
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: services/dj/Dockerfile
+    image: openstudio/dj:${OPENSTUDIO_VERSION:-1.0.0}
+    container_name: openstudio-dj
+    environment:
+      <<: *common-env
+      DJ_MAX_UPLOAD_MB: ${DJ_MAX_UPLOAD_MB:-512}
+      DJ_LLM_URL: ${DJ_LLM_URL:-http://llm:8000}
+      OMP_NUM_THREADS: ${CPU_THREADS:-4}
+      NUMBA_CACHE_DIR: /tmp/numba-cache
+    depends_on:
+      jobhub:
+        condition: service_healthy
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 25s
+      timeout: 8s
+      retries: 8
+      start_period: 35s
 
   # ── Video pipeline ──────────────────────────────────────────────────────
   video-audio:
@@ -338,6 +372,7 @@ services:
       OMNIVOICE_LOAD_ASR: ${OMNIVOICE_LOAD_ASR:-0}
       DEFAULT_PIPER_VOICE: ${DEFAULT_PIPER_VOICE:-pt-PT-tugao}
       VOICE_MAX_UPLOAD_MB: ${VOICE_MAX_UPLOAD_MB:-50}
+      PIPER_MODELS_DIR: ${PIPER_MODELS_DIR:-}
     shm_size: "1gb"
     depends_on:
       jobhub:
@@ -396,6 +431,7 @@ services:
       COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:8188}
       COMFYUI_WORKFLOW_PATH: ${COMFYUI_IMAGE_WORKFLOW:-}
       QVAC_URL: http://qvac:8000
+      QVAC_IMAGE_MODEL: ${QVAC_IMAGE_MODEL:-SD_V2_1_1B_Q4_0}
       IMAGEGEN_DEFAULT_PROVIDER: ${IMAGEGEN_DEFAULT_PROVIDER:-auto}
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -592,6 +628,11 @@ services:
       OPENSTUDIO_PROJECT_DIR: /project
       OPENSTUDIO_DATA_DIR: ${OPENSTUDIO_DATA_DIR:-./data}
       OPENSTUDIO_REPO_DIR: ${OPENSTUDIO_REPO_DIR:-.}
+      OPENSTUDIO_MODELS_DIR: /data/models
+      PIPER_MODELS_DIR: ${PIPER_MODELS_DIR:-}
+      OMNIVOICE_MODEL: ${OMNIVOICE_MODEL:-k2-fsa/OmniVoice}
+      QVAC_URL: http://qvac:8000
+      QVAC_IMAGE_MODEL: ${QVAC_IMAGE_MODEL:-SD_V2_1_1B_Q4_0}
       COMPOSE_OVERRIDES: ${COMPOSE_OVERRIDES:-}
       TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
       VOICE_DEVICE: ${VOICE_DEVICE:-cpu}
@@ -606,6 +647,7 @@ services:
       - ${OPENSTUDIO_DATA_DIR:-./data}/home:/data/home
       - ${OPENSTUDIO_DATA_DIR:-./data}/files:/data/files
       - ${OPENSTUDIO_DATA_DIR:-./data}/state:/data/state
+      - ${OPENSTUDIO_DATA_DIR:-./data}/models:/data/models:ro
     depends_on:
       jobhub:
         condition: service_healthy
@@ -630,6 +672,7 @@ services:
       JOBHUB_URL: http://jobhub:8000
       ADMIN_URL: http://admin:8000
       MUSIC_URL: http://music:8000
+      DJ_URL: http://dj:8000
       VIDEO_URL: http://video:8000
       VOICE_URL: http://voice:8000
       SRT_URL: http://srt:8000
