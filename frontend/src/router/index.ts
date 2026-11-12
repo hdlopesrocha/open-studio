@@ -8,6 +8,7 @@ const router = createRouter({
     { path: "/login", name: "login", component: () => import("@/views/AuthView.vue"), props: { mode: "login" }, meta: { public: true, title: "Sign in" } },
     { path: "/", name: "dashboard", component: () => import("@/views/DashboardView.vue"), meta: { title: "Dashboard" } },
     { path: "/music", name: "music", component: () => import("@/views/MusicView.vue"), meta: { title: "Music Studio" } },
+    { path: "/dj", name: "dj", component: () => import("@/views/DjView.vue"), meta: { title: "DJ Studio" } },
     { path: "/video", name: "video", component: () => import("@/views/VideoView.vue"), meta: { title: "Video Studio" } },
     { path: "/voice", name: "voice", component: () => import("@/views/VoiceView.vue"), meta: { title: "Voice Studio" } },
     { path: "/subtitles", name: "subtitles", component: () => import("@/views/SubtitlesView.vue"), meta: { title: "AI Subtitles" } },

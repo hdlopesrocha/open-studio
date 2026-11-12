@@ -6,6 +6,7 @@ import {
   AlignLeft,
   Captions,
   Clapperboard,
+  Disc3,
   DownloadCloud,
   FileText,
   Film,
@@ -37,6 +38,7 @@ const router = useRouter();
 const nav = [
   { to: "/", label: "Home", icon: LayoutDashboard },
   { to: "/music", label: "Music", icon: Music2 },
+  { to: "/dj", label: "DJ", icon: Disc3 },
   { to: "/video", label: "Video", icon: Clapperboard },
   { to: "/voice", label: "Voice", icon: Mic2 },
   { to: "/subtitles", label: "SRT", icon: Captions },

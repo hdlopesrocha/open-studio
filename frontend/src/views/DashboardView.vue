@@ -7,6 +7,7 @@ import {
   Captions,
   Clapperboard,
   Cpu,
+  Disc3,
   DownloadCloud,
   FileText,
   FolderOpen,
@@ -36,6 +37,7 @@ onMounted(async () => {
   if (DEMO) {
     kinds.value = {
       music: { files: 48, size: 1.84 * 1024 ** 3, size_label: "1.8 GB" },
+      dj: { files: 22, size: 936 * 1024 ** 2, size_label: "936 MB" },
       video: { files: 64, size: 12.4 * 1024 ** 3, size_label: "12.4 GB" },
       voice: { files: 31, size: 684 * 1024 ** 2, size_label: "684 MB" },
       images: { files: 122, size: 412 * 1024 ** 2, size_label: "412 MB" },
@@ -54,6 +56,7 @@ const status = computed(() => system.status || (DEMO ? demoStatus : null));
 const recentJobs = computed(() => jobs.recent.slice(0, 3));
 const quick = [
   { to: "/music", label: "Compose a song", detail: "ACE-Step 1.5 · lyrics · repaint", icon: Music2, tone: "violet" },
+  { to: "/dj", label: "Build a DJ set", detail: "Analyse · style models · mix scenes", icon: Disc3, tone: "cyan" },
   { to: "/video", label: "Make a music video", detail: "Scenes · animation · subtitles", icon: Clapperboard, tone: "cyan" },
   { to: "/voice", label: "Clone a voice", detail: "OmniVoice · Piper · 646 languages", icon: Mic2, tone: "amber" },
   { to: "/subtitles", label: "Align lyrics to SRT", detail: "Whisper · DP alignment · VTT", icon: Captions, tone: "green" },

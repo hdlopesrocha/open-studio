@@ -12,8 +12,9 @@ const props = withDefaults(
     downloadPath?: string | null;
     bars?: number;
     compact?: boolean;
+    waveform?: number[] | null;
   }>(),
-  { title: "", subtitle: "", downloadPath: null, bars: 96, compact: false },
+  { title: "", subtitle: "", downloadPath: null, bars: 96, compact: false, waveform: null },
 );
 
 const audio = ref<HTMLAudioElement | null>(null);
@@ -22,6 +23,8 @@ const playing = ref(false);
 const current = ref(0);
 const duration = ref(0);
 const volume = ref(0.9);
+const pendingSeek = ref<number | null>(null);
+let pendingPlay = false;
 let ctx: AudioContext | null = null;
 
 const resolved = computed(() => {
@@ -44,7 +47,16 @@ function seedWave() {
   peaks.value = values;
 }
 
+function applyWaveform() {
+  const values = props.waveform || [];
+  if (!values.length) return false;
+  const step = Math.max(1, Math.floor(values.length / props.bars));
+  peaks.value = values.filter((_, index) => index % step === 0).slice(0, props.bars);
+  return true;
+}
+
 async function decode() {
+  if (applyWaveform()) return;
   if (DEMO) {
     // Demo captures use deterministic peaks; never fetch a backend in demo mode.
     seedWave();
@@ -76,6 +88,32 @@ async function decode() {
   }
 }
 
+function pause() {
+  audio.value?.pause();
+}
+
+function seekTo(seconds: number, autoplay = false) {
+  const element = audio.value;
+  if (!element) return;
+  const target = Math.max(0, Number(seconds) || 0);
+  const apply = () => {
+    try {
+      const limit = Number.isFinite(element.duration) && element.duration > 0 ? element.duration : target;
+      element.currentTime = Math.min(target, limit);
+      current.value = element.currentTime;
+      if (autoplay) element.play().catch(() => {});
+    } catch {
+      pendingSeek.value = target;
+      pendingPlay = autoplay;
+    }
+  };
+  if (element.readyState >= 1) apply();
+  else {
+    pendingSeek.value = target;
+    pendingPlay = autoplay;
+  }
+}
+
 function toggle() {
   const element = audio.value;
   if (!element || !resolved.value) return;
@@ -101,7 +139,19 @@ function refresh() {
   if (!element) return;
   current.value = element.currentTime || 0;
   duration.value = Number.isFinite(element.duration) ? element.duration : 0;
+  if (pendingSeek.value !== null && element.readyState >= 1) {
+    const target = pendingSeek.value;
+    pendingSeek.value = null;
+    try {
+      element.currentTime = Math.min(target, Number.isFinite(element.duration) ? element.duration : target);
+      current.value = element.currentTime;
+      if (pendingPlay) element.play().catch(() => {});
+    } catch {}
+    pendingPlay = false;
+  }
 }
+
+defineExpose({ seekTo, pause });
 
 function setVolume() {
   if (audio.value) audio.value.volume = volume.value;
@@ -114,6 +164,7 @@ onMounted(() => {
 onBeforeUnmount(() => ctx?.close());
 
 watch(resolved, () => decode());
+watch(() => props.waveform, () => applyWaveform());
 </script>
 
 <template>
