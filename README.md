@@ -1,6 +1,6 @@
 # Open Studio
 
-**One private, password-protected studio for music, video, voice, subtitles, images, documents and media tools.**
+**One private, password-protected studio for chat, audio, video, voice, subtitles, images, documents and media tools.**
 Every model runs locally in Docker. Every sub-page shares one file tree, one design system, one authentication layer and one global job system.
 
 ```
@@ -45,13 +45,13 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 
 | Area | Functionality |
 |---|---|
-| **Chat** | Persistent local ChatGPT-style sessions and conversations backed by Ollama through the LLM bridge. Session sidebar, rename/delete, model selector, copy, AI workspace presets and authenticated REST API; messages are stored in `data/state/chat.db`. |
-| **Music + DJ** | ACE-Step 1.5 songs, structured lyrics, LLM drafts, takes and exports, plus DJ Library/Create/Mix tabs for analysis, style models, AI arrangements, beat-matched multi-section mix scenes and effects. Section-aware shared player, lyric section seeking, complete-lyrics copy and SRT export. |
-| **Video** | Audio + SRT → analysed timeline → scene plan → procedural / Diffusers / ComfyUI / QVAC artwork → FFmpeg or OpenCV animation → styled subtitles → final MP4/MKV. Scene editor, timeline, image variants, depth maps, audio-reactive effects, pause/cancel, export panel. |
+| **Chat** | Persistent local ChatGPT-style sessions and conversations backed by Ollama through the LLM bridge. The system prompt knows every Open Studio workspace, service, model, storage path and job workflow; session sidebar, rename/delete, model selector, copy, AI workspace presets and authenticated REST API. Messages are stored in `data/state/chat.db`. |
+| **Audio** | ACE-Step 1.5 songs, structured lyrics, LLM drafts, takes and exports, plus DJ Library/Create/Mix tabs for analysis, style models, AI arrangements, beat-matched multi-section mix scenes and effects, plus an integrated SRT tab for Whisper transcription/lyric alignment. Section-aware shared player, lyric section seeking, complete-lyrics copy and SRT export. |
+| **Video** | Audio + SRT → analysed timeline → scene plan → procedural / Diffusers / ComfyUI / QVAC artwork → FFmpeg or OpenCV animation → styled subtitles → final MP4/MKV. QVAC video/image/upscale/model tabs are embedded in Video. Scene editor, timeline, image variants, depth maps, audio-reactive effects, pause/cancel, export panel. |
 | **Voice** | OmniVoice zero-shot cloning, voice design by attributes, auto voice, Whisper transcription, 646 languages, Piper built-in voices, batch synthesis, retraining, export/import, previews, history. All TTS runs in Docker. |
 | **Subtitles** | MP3 + lyrics → frame-accurate SRT using Whisper word timestamps and dynamic-programming lyric alignment. Transcribe, from-text timing, SRT/VTT/ASS conversion, editable cue table, optional cue translation. |
 | **Images** | Unified picture generation with procedural, Diffusers, ComfyUI and QVAC providers. Text-to-image, image-to-image, upscaling, batches, seeds, samplers, LoRA, metadata sidecars and gallery. |
-| **Documents** | PDF or text → OCR → translate → summarise → narrate → SRT/VTT → manifest + ZIP. Editable artifacts, PDF page previews and an integrated Summary tab alongside the PDF tools. |
+| **Documents** | PDF or text → OCR → translate → summarise → narrate → SRT/VTT → manifest + ZIP. Editable artifacts, PDF page previews and integrated Summary and Translate tabs alongside the PDF tools. |
 | **Translation** | One shared service for every page: OPUS-MT pt↔en, optional NLLB-200, detection, segments/page markers, glossaries, markup preservation, sync or job mode. |
 | **Summary** | Hierarchical T5 summaries in English/Portuguese, available as a tab inside Documents. |
 | **FFmpeg** | 20+ operations in its own image: transcode, extract audio, trim, crop video/image, scale, rotate, concat, overlay, burn subtitles, frames, GIF, merge/replace audio, speed, volume, loudnorm, thumbnails, split, raw argv. Probe, progress and cancellation. |
@@ -242,11 +242,20 @@ The service manager is reached through the authenticated gateway at
 `/api/admin/services`; it uses the repository and Compose file mounted read-only
 inside the container and builds into the host Docker daemon.
 
-### DJ Studio (inside Music)
+### Chat context
 
-Enable **DJ Studio** in Settings → Services, then open **Music → DJ Library**,
-**DJ Create** or **DJ Mix** (`/dj` redirects into Music). It is a self-contained
-crate-digging and mix workspace:
+The Chat system prompt includes a complete Open Studio operating guide covering
+Audio (songwriting, DJ, SRT), Video/QVAC, Documents (PDF, translation, summary),
+Voice, Images, FFmpeg, yt-dlp, Files, Jobs, Settings, model downloads and the
+per-page service requirements. It can guide workflows and produce exact REST
+requests, but it cannot silently execute another workspace's tools. The context
+is also exposed at `GET /api/chat/context`.
+
+### DJ Studio (inside Audio)
+
+Enable **DJ Studio** in Settings → Services, then open **Audio → DJ Library**,
+**DJ Create** or **DJ Mix** (`/dj` redirects into Audio; `/audio` also opens the
+Audio workspace). It is a self-contained crate-digging and mix workspace:
 
 - **Library** — upload WAV/MP3/FLAC/M4A/OGG/OPUS files; analysis extracts BPM,
   musical key + Camelot code, style confidence, mood, energy, danceability,
@@ -275,6 +284,14 @@ DJ state is stored in `data/state/dj.db`; uploads and renders live under
 `data/files/dj/`. The service is CPU-friendly and does not require the
 ACE-Step engine. Music and DJ share the same section-aware player component and
 section/classification colours.
+
+### Service-aware pages
+
+Merged pages hide tabs that depend on disabled services and show a short notice
+with only the services needed for that page. Open Settings → Services from the
+notice to enable the exact workspace you need. Chat shows a notice and disables
+its composer when the LLM bridge is offline; Audio, Video and Documents hide
+their unavailable sub-tabs rather than presenting controls that cannot work.
 
 ### Persistent state
 
@@ -630,8 +647,9 @@ The job result contains `images[].path`, thumbnails and sidecars, all usable fro
 
 The document pipeline joins the **PDF**, **translation**, **summary**, **voice** and
 **FFmpeg** services. It accepts a PDF from Files or pasted text. Use the
-**Summary** tab alongside **PDF tools** for standalone summaries; `/summary`
-redirects to `Documents → Summary`.
+**Summary**, **Translate** and **PDF tools** tabs alongside Workflow; `/summary`
+redirects to `Documents → Summary` and `/translate` redirects to
+`Documents → Translate`.
 
 **Concrete example — annual report → Portuguese narration + subtitles**
 
@@ -661,14 +679,16 @@ curl -H 'Authorization: Bearer osk_...' -H 'Content-Type: application/json' \
 
 ---
 
-### Translation
+### Translation (inside Documents)
 
 ![Translation](docs/screenshots/translate.png)
 
-One shared service used by the Translate page, Documents and Subtitles.
+Translation is embedded as a **Documents → Translate** tab (the old `/translate`
+URL redirects there). One shared service is used by Documents, Audio/SRT and API
+clients.
 
 - **OPUS-MT** pt↔en is the fast default (PT variants supported).
-- **NLLB-200** is optional and can translate many languages; install with `make models-text` or the translation service's `download-models --models nllb`.
+- **NLLB-200** is optional and can translate many languages; install it from **Settings → Models** or with `make models-text`. The service only marks NLLB available after the model weights, config and tokenizer are all present, so a partial download cannot be selected.
 - Parameters: beam size, max length, temperature, length/repetition penalties, no-repeat n-gram, batch size, markup preservation, glossary rows.
 - Sync mode for short text, **Run as job** for long documents.
 
@@ -1269,7 +1289,7 @@ make verify        # against a running stack (set OPENSTUDIO_PASSWORD)
 make screenshots   # demo build + headless Chrome capture
 ```
 
-Backend tests currently cover 77 cases across shared path safety, chat
+Backend tests currently cover 80 cases across shared path safety, chat
 sessions/messages with a mocked LLM, password/session/API-key security, job
 persistence, the service-manager dependency planner, music project/song/lyrics
 CRUD, lyric SRT timing/export, PDF extraction (real generated PDF), SRT/VTT/ASS
