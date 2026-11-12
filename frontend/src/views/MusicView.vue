@@ -54,11 +54,14 @@ import { DEMO } from "@/lib/types";
 import type { Job } from "@/lib/types";
 import { demoJobs, demoLyrics, demoMusicCatalog, demoProjects, demoSongs, demoTakes } from "@/lib/demo";
 import { useJobsStore } from "@/stores/jobs";
+import { useSystemStore } from "@/stores/system";
 import { useToastStore } from "@/stores/toasts";
 import PageHeader from "@/components/PageHeader.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import FilePicker from "@/components/FilePicker.vue";
 import AudioPlayer from "@/components/AudioPlayer.vue";
+import SubtitlesView from "@/views/SubtitlesView.vue";
+import ServiceNotice from "@/components/ServiceNotice.vue";
 import SectionPlayer from "@/components/music/SectionPlayer.vue";
 import DjView from "@/views/DjView.vue";
 import JobCard from "@/components/JobCard.vue";
@@ -431,7 +434,9 @@ const DEMO_SYSTEM = {
 };
 
 const jobs = useJobsStore();
+const system = useSystemStore();
 const toasts = useToastStore();
+const serviceOnline = (name: string) => DEMO || !system.status || system.service(name)?.online === true;
 
 const route = useRoute();
 const API_BASE = import.meta.env.VITE_API_BASE || "/api";
@@ -2162,14 +2167,22 @@ const draftPlanLines = computed<number>(() => draftStructure.value.reduce((sum, 
 
 /* ------------------------------------------------------------------ derived project/song */
 const tabs = computed(() => [
-  { id: "projects", label: "Projects", count: projects.value.length },
-  { id: "studio", label: "Studio" },
-  { id: "library", label: "Library", count: songs.value.length },
-  { id: "dj-library", label: "DJ Library" },
-  { id: "dj-create", label: "DJ Create" },
-  { id: "dj-mix", label: "DJ Mix", count: 0 },
-  { id: "engine", label: "Engine" },
+  ...(serviceOnline("music") ? [
+    { id: "projects", label: "Projects", count: projects.value.length },
+    { id: "studio", label: "Studio" },
+    { id: "library", label: "Library", count: songs.value.length },
+  ] : []),
+  ...(serviceOnline("dj") ? [
+    { id: "dj-library", label: "DJ Library" },
+    { id: "dj-create", label: "DJ Create" },
+    { id: "dj-mix", label: "DJ Mix" },
+  ] : []),
+  ...(serviceOnline("srt") ? [{ id: "srt", label: "SRT" }] : []),
+  ...(serviceOnline("music-engine") ? [{ id: "engine", label: "Engine" }] : []),
 ]);
+watch(tabs, (items) => {
+  if (!items.some((item) => item.id === tab.value)) tab.value = items[0]?.id || "projects";
+}, { immediate: true });
 
 const selectedProject = computed<MusicProject | null>(() => projects.value.find((project) => project.id === selectedProjectId.value) || null);
 const activeProject = computed<MusicProject | null>(() => projects.value.find((project) => project.id === activeSong.value?.project_id) || null);
@@ -2440,9 +2453,9 @@ if (DEMO) initializeDemo();
 <template>
   <div class="page music-page">
     <PageHeader
-      eyebrow="Music studio"
-      title="Music"
-      subtitle="ACE-Step 1.5 songwriting with structured lyrics, full songs, repaint, cover and extend modes. Audio lives in the shared file tree and every render runs as a per-component job."
+      eyebrow="Audio studio"
+      title="Audio"
+      subtitle="ACE-Step 1.5 songwriting, DJ analysis and mixing, and lyric-aligned SRT tools in one audio workspace. Every render runs as a per-component job."
     >
       <template #actions>
         <button class="btn btn-sm" @click="openProjectModal()"><FolderPlus :size="13" /> New project</button>
@@ -2452,6 +2465,17 @@ if (DEMO) initializeDemo();
         </button>
       </template>
     </PageHeader>
+
+    <ServiceNotice
+      :services="[
+        { name: 'music', label: 'Music / ACE-Step' },
+        { name: 'music-engine', label: 'ACE-Step Engine' },
+        { name: 'dj', label: 'DJ Studio' },
+        { name: 'srt', label: 'AI Subtitles' },
+        { name: 'llm', label: 'Local LLM' },
+      ]"
+      title="Some Audio features are unavailable"
+    />
 
     <div class="music-toolbar">
       <TabsBar v-model="tab" :tabs="tabs" />
@@ -2484,7 +2508,7 @@ if (DEMO) initializeDemo();
     </div>
 
     <!-- ---------------------------------------------------------------- projects -->
-    <template v-else-if="tab === 'projects'">
+    <template v-else-if="serviceOnline('music') && tab === 'projects'">
       <div class="stat-grid music-stats">
         <div class="stat">
           <div class="stat-label">Projects</div>
@@ -2573,7 +2597,7 @@ if (DEMO) initializeDemo();
     </template>
 
     <!-- ---------------------------------------------------------------- studio -->
-    <template v-else-if="tab === 'studio'">
+    <template v-else-if="serviceOnline('music') && tab === 'studio'">
       <div v-if="loadingSong && !activeSong" class="panel">
         <div class="panel-body stack">
           <div class="skeleton" style="height: 110px" />
@@ -3237,7 +3261,7 @@ if (DEMO) initializeDemo();
     </template>
 
     <!-- ---------------------------------------------------------------- library -->
-    <template v-else-if="tab === 'library'">
+    <template v-else-if="serviceOnline('music') && tab === 'library'">
       <section class="panel">
         <div class="panel-head" style="align-items: flex-start; flex-wrap: wrap">
           <div>
@@ -3324,7 +3348,7 @@ if (DEMO) initializeDemo();
     </template>
 
     <!-- ---------------------------------------------------------------- DJ studio -->
-    <template v-else-if="tab.startsWith('dj-')">
+    <template v-else-if="serviceOnline('dj') && tab.startsWith('dj-')">
       <DjView
         embedded
         :active-tab="tab.slice(3)"
@@ -3332,8 +3356,13 @@ if (DEMO) initializeDemo();
       />
     </template>
 
+    <!-- ---------------------------------------------------------------- SRT -->
+    <template v-else-if="serviceOnline('srt') && tab === 'srt'">
+      <SubtitlesView embedded />
+    </template>
+
     <!-- ---------------------------------------------------------------- engine -->
-    <template v-else>
+    <template v-else-if="serviceOnline('music-engine') && tab === 'engine'">
       <div class="stack">
         <section class="panel engine-hero">
           <div class="engine-hero-inner">

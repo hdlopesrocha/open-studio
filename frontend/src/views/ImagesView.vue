@@ -693,6 +693,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(pollTimer);
   window.clearInterval(demoProgressTimer);
 });
+import ServiceNotice from "@/components/ServiceNotice.vue";
 </script>
 
 <template>
@@ -708,6 +709,11 @@ onBeforeUnmount(() => {
         <button class="btn btn-sm" @click="tab = 'gallery'"><Images :size="13" /> Gallery</button>
       </template>
     </PageHeader>
+
+    <ServiceNotice
+      :services="[{ name: 'imagegen', label: 'Picture Studio' }]"
+      title="This workspace needs Picture Studio"
+    />
 
     <div class="stat-grid" style="margin-bottom: 16px">
       <div class="stat">

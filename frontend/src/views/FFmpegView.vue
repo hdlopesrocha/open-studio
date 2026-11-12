@@ -974,6 +974,7 @@ const categoryTone: Record<string, string> = {
   image: "chip warn",
   advanced: "chip danger",
 };
+import ServiceNotice from "@/components/ServiceNotice.vue";
 </script>
 
 <template>
@@ -996,6 +997,11 @@ const categoryTone: Record<string, string> = {
         </button>
       </template>
     </PageHeader>
+
+    <ServiceNotice
+      :services="[{ name: 'ffmpeg', label: 'FFmpeg' }]"
+      title="This workspace needs FFmpeg"
+    />
 
     <div class="workbench">
       <aside class="panel ops-panel">

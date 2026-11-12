@@ -39,6 +39,8 @@ import CodeBlock from "@/components/CodeBlock.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import TabsBar from "@/components/TabsBar.vue";
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
+
 const jobs = useJobsStore();
 const toasts = useToastStore();
 
@@ -790,8 +792,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page srt-page" :class="{ 'srt-embedded': embedded }">
     <PageHeader
+      v-if="!embedded"
       eyebrow="AI subtitles · Whisper + DP alignment"
       title="AI subtitles"
       subtitle="Turn an MP3 and its lyrics into frame-accurate SRT with Whisper and dynamic-programming alignment. Transcribe speech, time plain text, or convert between SRT, VTT and ASS."
@@ -1431,4 +1434,8 @@ onBeforeUnmount(() => {
     gap: 3px;
   }
 }
+</style>
+
+<style scoped>
+.srt-embedded { padding: 0; }
 </style>

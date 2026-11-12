@@ -51,6 +51,8 @@ import AudioPlayer from "@/components/AudioPlayer.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import SummaryPanel from "@/components/documents/SummaryPanel.vue";
+import TranslateView from "@/views/TranslateView.vue";
+import ServiceNotice from "@/components/ServiceNotice.vue";
 
 type TextKind = "extracted" | "translation" | "summary";
 
@@ -60,7 +62,7 @@ const system = useSystemStore();
 const route = useRoute();
 const router = useRouter();
 
-const TAB_IDS = ["workflow", "pdf", "summary", "results"] as const;
+const TAB_IDS = ["workflow", "pdf", "summary", "translate", "results"] as const;
 
 function tabFromQuery(value: unknown): string | null {
   const candidate = Array.isArray(value) ? value[0] : value;
@@ -69,8 +71,10 @@ function tabFromQuery(value: unknown): string | null {
 
 const tab = ref(tabFromQuery(route.query.tab) || "workflow");
 const summaryMounted = ref(tab.value === "summary");
+const translateMounted = ref(tab.value === "translate");
 watch(tab, (value) => {
   if (value === "summary") summaryMounted.value = true;
+  if (value === "translate") translateMounted.value = true;
   if ((tabFromQuery(route.query.tab) || "workflow") === value) return;
   const query = { ...route.query };
   if (value === "workflow") delete query.tab;
@@ -186,12 +190,21 @@ const resultTexts = reactive<Record<TextKind, string>>({ extracted: "", translat
 const originalTexts = reactive<Record<TextKind, string>>({ extracted: "", translation: "", summary: "" });
 const savingKind = ref<TextKind | "">("");
 
+const docsOnline = computed(() => (system.status ? system.service("docs")?.online === true : true));
+const pdfOnline = computed(() => (system.status ? system.service("pdf")?.online === true : true));
+const summaryOnline = computed(() => (system.status ? system.service("summary")?.online === true : true));
+const translationOnline = computed(() => (system.status ? system.service("translation")?.online === true : true));
+
 const tabs = computed(() => [
-  { id: "workflow", label: "Workflow" },
-  { id: "pdf", label: "PDF tools" },
-  { id: "summary", label: "Summary" },
-  { id: "results", label: "Results", count: result.value ? 3 : undefined },
+  ...(docsOnline.value ? [{ id: "workflow", label: "Workflow" }] : []),
+  ...(pdfOnline.value ? [{ id: "pdf", label: "PDF tools" }] : []),
+  ...(summaryOnline.value ? [{ id: "summary", label: "Summary" }] : []),
+  ...(translationOnline.value ? [{ id: "translate", label: "Translate" }] : []),
+  ...(docsOnline.value ? [{ id: "results", label: "Results", count: result.value ? 3 : undefined }] : []),
 ]);
+watch(tabs, (items) => {
+  if (!items.some((item) => item.id === tab.value)) tab.value = items[0]?.id || "workflow";
+}, { immediate: true });
 
 const resultTextTabs = computed(() => [
   { id: "extracted", label: "Extracted", count: wordCount(resultTexts.extracted) },
@@ -223,8 +236,6 @@ const voiceLanguageOptions = computed(() => {
   return languages;
 });
 
-const docsOnline = computed(() => (system.status ? system.service("docs")?.online !== false : true));
-const pdfOnline = computed(() => (system.status ? system.service("pdf")?.online !== false : true));
 const translationAvailable = computed(() => Boolean(caps.value?.translation.available));
 const summaryAvailable = computed(() => Boolean(caps.value?.summary.available));
 const ttsAvailable = computed(() => Boolean(caps.value?.tts.available));
@@ -1352,7 +1363,17 @@ function delay(ms: number) {
     </div>
 
     <!-- Workflow -------------------------------------------------------- -->
-    <div v-if="tab === 'workflow'" class="split">
+    <ServiceNotice
+      :services="[
+        { name: 'docs', label: 'Documents' },
+        { name: 'pdf', label: 'PDF tools' },
+        { name: 'summary', label: 'Summary' },
+        { name: 'translation', label: 'Translation' },
+      ]"
+      title="Some document features are unavailable"
+    />
+
+    <div v-if="docsOnline && tab === 'workflow'" class="split">
       <div class="stack">
         <section class="panel">
           <div class="panel-head">
@@ -1730,7 +1751,7 @@ function delay(ms: number) {
     </div>
 
     <!-- PDF tools ------------------------------------------------------- -->
-    <div v-else-if="tab === 'pdf'" class="stack">
+    <div v-else-if="pdfOnline && tab === 'pdf'" class="stack">
       <div class="split">
         <section class="panel">
           <div class="panel-head">
@@ -1830,7 +1851,7 @@ function delay(ms: number) {
     </div>
 
     <!-- Results --------------------------------------------------------- -->
-    <div v-else-if="tab === 'results'" class="stack">
+    <div v-else-if="docsOnline && tab === 'results'" class="stack">
       <template v-if="result">
         <section class="panel">
           <div class="panel-head">
@@ -1992,8 +2013,13 @@ function delay(ms: number) {
       </EmptyState>
     </div>
 
+    <!-- Translation ----------------------------------------------------- -->
+    <template v-if="translateMounted && translationOnline">
+      <TranslateView v-show="tab === 'translate'" embedded />
+    </template>
+
     <!-- Summary --------------------------------------------------------- -->
-    <template v-if="summaryMounted">
+    <template v-if="summaryMounted && summaryOnline">
       <SummaryPanel v-show="tab === 'summary'" embedded @open-workflow="tab = 'workflow'" />
     </template>
 

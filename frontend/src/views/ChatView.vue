@@ -15,9 +15,11 @@ import {
 } from "lucide-vue-next";
 import { api, relativeTime } from "@/lib/api";
 import { DEMO } from "@/lib/types";
+import { useSystemStore } from "@/stores/system";
 import { useToastStore } from "@/stores/toasts";
 import PageHeader from "@/components/PageHeader.vue";
 import EmptyState from "@/components/EmptyState.vue";
+import ServiceNotice from "@/components/ServiceNotice.vue";
 
 interface ChatSession {
   id: string;
@@ -39,7 +41,9 @@ interface ChatMessage {
   created_at: string;
 }
 
+const system = useSystemStore();
 const toasts = useToastStore();
+const llmOnline = computed(() => DEMO || !system.status || system.service("llm")?.online === true);
 const sessions = ref<ChatSession[]>([]);
 const messages = ref<ChatMessage[]>([]);
 const activeId = ref("");
@@ -60,18 +64,18 @@ const filteredSessions = computed(() => {
   return sessions.value.filter((session) => `${session.title} ${session.last_message || ""}`.toLowerCase().includes(needle));
 });
 const presets = [
-  { label: "Music", to: "/music", prompt: "Help me write and arrange a new song. Ask for the genre, mood, reference artists, language and vocal direction." },
-  { label: "DJ / Mix", to: "/music", prompt: "Help me plan a DJ mix. Ask for my tracks, target BPM, energy arc and transition style, then suggest a section-by-section plan." },
+  { label: "Audio", to: "/music", prompt: "Help me write, arrange or mix audio. Ask for the genre, mood, reference artists, language, vocal direction and whether I need songwriting, DJ mixing or subtitles." },
+  { label: "DJ / Mix", to: "/music?tab=dj-library", prompt: "Help me plan a DJ mix. Ask for my tracks, target BPM, energy arc and transition style, then suggest a section-by-section plan." },
   { label: "Video", to: "/video", prompt: "Help me plan a music video. Ask for the track, visual references, shot list and pacing, then outline scenes and transitions." },
   { label: "Voice", to: "/voice", prompt: "Help me choose a voice and prepare a script. Ask for language, accent, gender, pace and emotion." },
   { label: "Images", to: "/images", prompt: "Help me write a high-quality image prompt. Ask for subject, lighting, lens, composition, palette and negative constraints." },
   { label: "Documents / PDF", to: "/documents", prompt: "Help me process a document. Ask what I need: extract text, OCR, translate, summarize, narrate or export subtitles." },
-  { label: "Translation", to: "/translate", prompt: "Help me translate a text. Ask for source language, target variant, tone and whether names or technical terms must remain unchanged." },
+  { label: "Translate", to: "/documents?tab=translate", prompt: "Help me translate a text. Ask for source language, target variant, tone and whether names or technical terms must remain unchanged." },
   { label: "Summary", to: "/documents?tab=summary", prompt: "Help me summarize a long document. Ask for the audience, target language, desired length and what decisions the summary must support." },
-  { label: "Subtitles", to: "/subtitles", prompt: "Help me create subtitles or align lyrics. Ask for the audio, language and whether I need SRT, VTT or partial lyric alignment." },
+  { label: "SRT", to: "/music?tab=srt", prompt: "Help me create subtitles or align lyrics. Ask for the audio, language and whether I need SRT, VTT or partial lyric alignment." },
   { label: "FFmpeg", to: "/ffmpeg", prompt: "Help me build an FFmpeg workflow. Ask for input files, desired output, codec, resolution, loudness and timing constraints." },
   { label: "yt-dlp", to: "/ytdlp", prompt: "Help me prepare a media download. Ask for the URL, desired quality, audio-only or video, subtitles and output format." },
-  { label: "QVAC", to: "/qvac", prompt: "Help me plan a QVAC generation. Ask for prompts, dimensions, frames, duration and whether I need image-to-video or upscaling." },
+  { label: "QVAC", to: "/video?tab=qvac", prompt: "Help me plan a QVAC generation. Ask for prompts, dimensions, frames, duration and whether I need image-to-video or upscaling." },
 ];
 
 async function loadModels() {
@@ -292,6 +296,8 @@ onMounted(async () => {
           </div>
         </div>
 
+        <ServiceNotice :services="[{ name: 'llm', label: 'LLM Bridge + Ollama' }]" title="Chat needs the local LLM" />
+
         <div v-if="error" class="alert error chat-error">
           <strong>The local model did not answer.</strong>
           <span>{{ error }}</span>
@@ -322,15 +328,19 @@ onMounted(async () => {
         <div class="chat-presets">
           <div class="row" style="gap: 5px; margin-bottom: 7px"><Wrench :size="12" class="muted" /><span class="small muted">AI workspaces</span></div>
           <div class="row" style="gap: 5px; flex-wrap: wrap">
-            <button v-for="preset in presets" :key="preset.label" class="chip clickable" @click="usePreset(preset.prompt)">{{ preset.label }}</button>
+            <button v-for="preset in presets" :key="preset.label" class="chip clickable" :title="`Use the ${preset.label} workspace prompt`" @click="usePreset(preset.prompt)">{{ preset.label }}</button>
           </div>
+          <details class="chat-context">
+            <summary>What the assistant knows</summary>
+            <p>It knows the Audio (songwriting, DJ and SRT), Video/QVAC, Documents (PDF, translation and summary), Voice, Images, FFmpeg, yt-dlp, Files, Jobs and Settings workspaces, plus which models and services must be enabled. It can guide you, write prompts and produce REST requests, but it cannot silently run another workspace.</p>
+          </details>
         </div>
 
         <div class="chat-composer">
-          <textarea v-model="draft" class="textarea" rows="3" placeholder="Message your local model…  Shift+Enter for a new line" @keydown="onComposerKeydown" />
+          <textarea v-model="draft" class="textarea" rows="3" :disabled="!llmOnline" placeholder="Message your local model…  Shift+Enter for a new line" @keydown="onComposerKeydown" />
           <div class="row-between" style="margin-top: 8px">
             <span class="small muted"><Sparkles :size="11" /> {{ model }} · local session context</span>
-            <button class="btn btn-primary" :disabled="sending || !draft.trim()" @click="send"><Loader2 v-if="sending" :size="14" class="spin" /><Send v-else :size="14" /> Send</button>
+            <button class="btn btn-primary" :disabled="sending || !draft.trim() || !llmOnline" @click="send"><Loader2 v-if="sending" :size="14" class="spin" /><Send v-else :size="14" /> Send</button>
           </div>
         </div>
       </section>
@@ -373,4 +383,10 @@ onMounted(async () => {
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 900px) { .chat-layout { grid-template-columns: 1fr; } .chat-transcript { max-height: 50vh; } }
+</style>
+
+<style scoped>
+.chat-context { margin-top: 7px; color: var(--muted); font-size: 10px; }
+.chat-context summary { cursor: pointer; }
+.chat-context p { margin: 5px 0 0; line-height: 1.5; }
 </style>

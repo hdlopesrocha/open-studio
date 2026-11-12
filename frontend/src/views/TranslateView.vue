@@ -35,6 +35,8 @@ import FilePicker from "@/components/FilePicker.vue";
 import JobCard from "@/components/JobCard.vue";
 import EmptyState from "@/components/EmptyState.vue";
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
+
 const jobs = useJobsStore();
 const system = useSystemStore();
 const toasts = useToastStore();
@@ -841,8 +843,9 @@ function delay(ms: number) {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page translate-page" :class="{ 'translate-embedded': embedded }">
     <PageHeader
+      v-if="!embedded"
       eyebrow="Shared language service"
       title="Translation"
       subtitle="One local translation service for every studio page. Portuguese ↔ English uses OPUS-MT, NLLB-200 adds 200 languages, and glossaries plus markup protection keep names and page markers intact."
@@ -1115,4 +1118,8 @@ function delay(ms: number) {
   .language-bar .field, .language-bar .model-field { min-width: 100%; }
   .language-bar .detect-btn { width: 100%; }
 }
+</style>
+
+<style scoped>
+.translate-embedded { padding: 0; }
 </style>

@@ -704,6 +704,7 @@ function kindIcon(file: any) {
 
 const extractorCount = computed(() => catalog.value?.extractors?.count || 1842);
 const ytVersion = computed(() => catalog.value?.yt_dlp?.version || catalog.value?.version || "2026.10.11");
+import ServiceNotice from "@/components/ServiceNotice.vue";
 </script>
 
 <template>
@@ -723,6 +724,11 @@ const ytVersion = computed(() => catalog.value?.yt_dlp?.version || catalog.value
         <button class="btn btn-sm" :disabled="catalogLoading" @click="loadCatalog"><RefreshCw :size="13" :class="{ spin: catalogLoading }" /> Catalog</button>
       </template>
     </PageHeader>
+
+    <ServiceNotice
+      :services="[{ name: 'ytdlp', label: 'yt-dlp' }]"
+      title="This workspace needs yt-dlp"
+    />
 
     <div class="row-between" style="margin-bottom: 14px; flex-wrap: wrap; gap: 10px">
       <TabsBar v-model="tab" :tabs="tabs" />

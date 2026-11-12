@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import {
   Activity,
   AlertTriangle,
@@ -41,6 +42,8 @@ import { useJobsStore } from "@/stores/jobs";
 import { useSystemStore } from "@/stores/system";
 import { useToastStore } from "@/stores/toasts";
 import PageHeader from "@/components/PageHeader.vue";
+import QvacView from "@/views/QvacView.vue";
+import ServiceNotice from "@/components/ServiceNotice.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import FilePicker from "@/components/FilePicker.vue";
 import AudioPlayer from "@/components/AudioPlayer.vue";
@@ -960,7 +963,15 @@ const subtitleLines = ref<Cue[]>([]);
 const videoAssets = ref<VideoAsset[]>([]);
 const demoProjectCache = new Map<string, { project: VideoProject; scenes: VideoScene[]; cues: Cue[]; assets: VideoAsset[] }>();
 const selectedSceneId = ref<number | null>(null);
-const tab = ref("projects");
+const route = useRoute();
+const initialTab = typeof route.query.tab === "string" ? route.query.tab : "projects";
+const tab = ref(initialTab);
+watch(
+  () => route.query.tab,
+  (next) => {
+    if (typeof next === "string" && next && next !== tab.value) tab.value = next;
+  },
+);
 const refreshing = ref(false);
 
 const newProjectOpen = ref(false);
@@ -1219,14 +1230,22 @@ async function refreshAll(): Promise<void> {
 // Derived project metadata
 // ---------------------------------------------------------------------------
 
-const tabs = computed(() => [
-  { id: "projects", label: "Projects", count: projects.value.length },
-  { id: "editor", label: "Editor" },
-  { id: "render", label: "Render queue", count: videoJobs.value.filter((job) => ACTIVE_STATUSES.has(job.status)).length },
-]);
-
 const videoService = computed(() => system.service("video"));
-const videoWorkerOnline = computed(() => videoService.value?.online ?? (DEMO ? true : system.online > 0));
+const videoWorkerOnline = computed(() => DEMO || !system.status || videoService.value?.online === true);
+const qvacService = computed(() => system.service("qvac"));
+const qvacOnline = computed(() => DEMO || !system.status || qvacService.value?.online === true);
+
+const tabs = computed(() => [
+  ...(videoWorkerOnline.value ? [
+    { id: "projects", label: "Projects", count: projects.value.length },
+    { id: "editor", label: "Editor" },
+    { id: "render", label: "Render queue", count: videoJobs.value.filter((job) => ACTIVE_STATUSES.has(job.status)).length },
+  ] : []),
+  ...(qvacOnline.value ? [{ id: "qvac", label: "QVAC" }] : []),
+]);
+watch(tabs, (items) => {
+  if (!items.some((item) => item.id === tab.value)) tab.value = items[0]?.id || "projects";
+}, { immediate: true });
 
 const selectedScene = computed<VideoScene | null>(() => {
   if (!scenes.value.length) return null;
@@ -2645,10 +2664,23 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <ServiceNotice
+      :services="[
+        { name: 'video', label: 'Video Studio' },
+        { name: 'qvac', label: 'QVAC' },
+        { name: 'imagegen', label: 'Picture Studio' },
+      ]"
+      title="Some video features are unavailable"
+    />
+
+    <section v-if="qvacOnline && tab === 'qvac'" class="stack">
+      <QvacView embedded />
+    </section>
+
     <!-- ================================================================= -->
     <!-- Projects                                                           -->
     <!-- ================================================================= -->
-    <section v-if="tab === 'projects'" class="stack">
+    <section v-if="videoWorkerOnline && tab === 'projects'" class="stack">
       <div class="stat-grid">
         <div class="stat">
           <div class="stat-label">Video projects</div>
@@ -2841,7 +2873,7 @@ onBeforeUnmount(() => {
     <!-- ================================================================= -->
     <!-- Editor                                                             -->
     <!-- ================================================================= -->
-    <section v-else-if="tab === 'editor'" class="stack">
+    <section v-else-if="videoWorkerOnline && tab === 'editor'" class="stack">
       <div v-if="loadingProject && !currentProject" class="panel">
         <div class="panel-body stack">
           <div class="skeleton" style="height: 92px" />

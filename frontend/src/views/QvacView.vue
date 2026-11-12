@@ -49,6 +49,8 @@ import CodeBlock from "@/components/CodeBlock.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import ProgressBar from "@/components/ProgressBar.vue";
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
+
 const jobs = useJobsStore();
 const system = useSystemStore();
 const toasts = useToastStore();
@@ -1328,8 +1330,9 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page qvac-page" :class="{ 'qvac-embedded': embedded }">
     <PageHeader
+      v-if="!embedded"
       eyebrow="Local video generation · Tether QVAC SDK · own Docker image"
       title="QVAC video"
       subtitle="Text-to-video and image-to-video with Wan 2.1/2.2, LTX-2 and MiniMax-H3, plus QVAC image diffusion and ESRGAN upscaling. Every SDK control, model load option and runtime constraint is exposed here and executed inside the QVAC Docker image."
@@ -2080,4 +2083,8 @@ details.option-block[open] > summary { margin-bottom: 2px; }
   .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .form-grid { grid-template-columns: 1fr; }
 }
+</style>
+
+<style scoped>
+.qvac-embedded { padding: 0; }
 </style>

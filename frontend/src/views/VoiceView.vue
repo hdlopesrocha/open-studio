@@ -1417,6 +1417,7 @@ onBeforeUnmount(() => {
   stopRecording();
   clearAudioSource();
 });
+import ServiceNotice from "@/components/ServiceNotice.vue";
 </script>
 
 <template>
@@ -1432,6 +1433,11 @@ onBeforeUnmount(() => {
         <button class="btn btn-sm" @click="openTrain()"><Plus :size="13" /> Train a voice</button>
       </template>
     </PageHeader>
+
+    <ServiceNotice
+      :services="[{ name: 'voice', label: 'Voice' }]"
+      title="This workspace needs Voice"
+    />
 
     <div class="stat-grid" style="margin-bottom: 16px">
       <div class="stat">
