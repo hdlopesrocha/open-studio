@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { RouterLink } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import {
   AlertTriangle,
   Archive,
@@ -50,14 +50,40 @@ import FilePicker from "@/components/FilePicker.vue";
 import AudioPlayer from "@/components/AudioPlayer.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
+import SummaryPanel from "@/components/documents/SummaryPanel.vue";
 
 type TextKind = "extracted" | "translation" | "summary";
 
 const jobs = useJobsStore();
 const toasts = useToastStore();
 const system = useSystemStore();
+const route = useRoute();
+const router = useRouter();
 
-const tab = ref("workflow");
+const TAB_IDS = ["workflow", "pdf", "summary", "results"] as const;
+
+function tabFromQuery(value: unknown): string | null {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  return typeof candidate === "string" && (TAB_IDS as readonly string[]).includes(candidate) ? candidate : null;
+}
+
+const tab = ref(tabFromQuery(route.query.tab) || "workflow");
+const summaryMounted = ref(tab.value === "summary");
+watch(tab, (value) => {
+  if (value === "summary") summaryMounted.value = true;
+  if ((tabFromQuery(route.query.tab) || "workflow") === value) return;
+  const query = { ...route.query };
+  if (value === "workflow") delete query.tab;
+  else query.tab = value;
+  router.replace({ query });
+});
+watch(
+  () => route.query.tab,
+  (value) => {
+    const next = tabFromQuery(value);
+    if (next && next !== tab.value) tab.value = next;
+  },
+);
 const resultKind = ref<TextKind>("summary");
 const capsLoading = ref(!DEMO);
 const capsError = ref("");
@@ -163,6 +189,7 @@ const savingKind = ref<TextKind | "">("");
 const tabs = computed(() => [
   { id: "workflow", label: "Workflow" },
   { id: "pdf", label: "PDF tools" },
+  { id: "summary", label: "Summary" },
   { id: "results", label: "Results", count: result.value ? 3 : undefined },
 ]);
 
@@ -1317,7 +1344,7 @@ function delay(ms: number) {
 
     <div class="row-between" style="margin-bottom: 16px">
       <TabsBar v-model="tab" :tabs="tabs" />
-      <div class="row small muted" style="gap: 8px">
+      <div v-if="tab !== 'summary'" class="row small muted" style="gap: 8px">
         <span>{{ sourceLabel }}</span>
         <span>·</span>
         <span>{{ sourceRangeLabel }}</span>
@@ -1803,7 +1830,7 @@ function delay(ms: number) {
     </div>
 
     <!-- Results --------------------------------------------------------- -->
-    <div v-else class="stack">
+    <div v-else-if="tab === 'results'" class="stack">
       <template v-if="result">
         <section class="panel">
           <div class="panel-head">
@@ -1964,6 +1991,11 @@ function delay(ms: number) {
         <button class="btn btn-primary" @click="tab = 'workflow'"><Play :size="13" /> Open workflow</button>
       </EmptyState>
     </div>
+
+    <!-- Summary --------------------------------------------------------- -->
+    <template v-if="summaryMounted">
+      <SummaryPanel v-show="tab === 'summary'" embedded @open-workflow="tab = 'workflow'" />
+    </template>
 
     <FilePicker v-model="sourcePickerOpen" title="Choose a PDF" kind="document" accept=".pdf" @selected="onSourcePdf" />
     <FilePicker v-model="toolsPickerOpen" title="Choose a PDF" kind="document" accept=".pdf" @selected="onToolPdf" />
