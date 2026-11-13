@@ -97,8 +97,11 @@ used with live services.
 ### Sign in
 ![Sign in](docs/screenshots/login.png)
 
-### Music studio
-![Music studio](docs/screenshots/music.png)
+### AI Chat
+![AI Chat](docs/screenshots/chat.png)
+
+### Audio studio
+![Audio studio](docs/screenshots/music.png)
 
 ### Video studio
 ![Video studio](docs/screenshots/video.png)
@@ -106,8 +109,8 @@ used with live services.
 ### Voice studio
 ![Voice studio](docs/screenshots/voice.png)
 
-### AI subtitles
-![AI subtitles](docs/screenshots/subtitles.png)
+### Audio → SRT
+![Audio SRT](docs/screenshots/subtitles.png)
 
 ### Picture studio
 ![Picture studio](docs/screenshots/images.png)
@@ -127,8 +130,8 @@ used with live services.
 ### yt-dlp
 ![yt-dlp](docs/screenshots/ytdlp.png)
 
-### QVAC video
-![QVAC video](docs/screenshots/qvac.png)
+### Video → QVAC
+![Video QVAC](docs/screenshots/qvac.png)
 
 ### Files
 ![Files](docs/screenshots/files.png)
@@ -465,9 +468,9 @@ Shows service health, active jobs, storage, compute, recent activity and quick l
 
 ---
 
-### Music studio
+### Audio studio
 
-![Music studio](docs/screenshots/music.png)
+![Audio studio](docs/screenshots/music.png)
 
 Music is project → songs → lyrics/takes. Each song owns its brief, structured lyrics, generation settings and takes.
 
@@ -596,9 +599,9 @@ curl -H 'Authorization: Bearer osk_...' -H 'Content-Type: application/json' \
 
 ---
 
-### AI subtitles
+### Audio → SRT
 
-![AI subtitles](docs/screenshots/subtitles.png)
+![Audio → SRT](docs/screenshots/subtitles.png)
 
 The key feature is **mp3 + lyrics → SRT**: Whisper produces word timestamps, then a
 normalised dynamic-programming matcher aligns your lyric lines to the audio.
@@ -821,9 +824,9 @@ Downloaded files appear in **Files** under `ytdlp/<job-id>/` and can be sent str
 
 ---
 
-### QVAC video
+### Video → QVAC
 
-![QVAC video](docs/screenshots/qvac.png)
+![Video → QVAC](docs/screenshots/qvac.png)
 
 QVAC is Tether's local AI SDK. The QVAC service is a Node 22 Docker image with
 `@qvac/sdk`, FFmpeg and Vulkan runtime libraries. The page exposes **all SDK
