@@ -240,8 +240,9 @@ PDF/text → translate → summarize → TTS → SRT/VTT → ZIP.
 
 ## QVAC — `/api/qvac` (Node service)
 
-- `GET /catalog` → model families/constants, device and memory info, modes.
+- `GET /catalog` → model families/constants, install status, device and memory info, modes.
 - `GET /status` → SDK version, loaded model, GPU/unified memory.
+- `POST /models/install` `{family}` → download and verify every asset in a QVAC model pack.
 - `POST /models/load`, `POST /models/unload`, `GET /models/loaded`.
 - `POST /video` (job): all QVAC video params (txt2vid/img2vid, prompt,
   negative_prompt, init_image, width, height, video_frames, fps, steps,
@@ -257,6 +258,7 @@ PDF/text → translate → summarize → TTS → SRT/VTT → ZIP.
 
 ## Service manager — `/api/admin`
 
+- `GET /models` → static model packs plus live QVAC family packs; QVAC installation is handled through the standard model job.
 - `GET /services` → all core + optional services with `enabled`, `running`, `health`, `image_built`, `requires`.
 - `POST /services/{name}/enable|disable|build|restart` → central job (`component:"admin"`).
   Enable builds only when the image is missing; disable stops and removes the container.

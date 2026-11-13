@@ -47,7 +47,7 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 |---|---|
 | **Chat** | Persistent local ChatGPT-style sessions with a favorite model used by default for every new conversation, message edit/revert/delete, shared-file attachments through the same file picker as the rest of the app, spoken replies from any assistant message with an optional auto-speak toggle, an iterative Qwen3 4B Instruct action agent and first-class voice training from shared reference audio. Chat uses OmniVoice on accelerated hardware and falls back to an installed Piper voice on CPU or while the model is loading. It knows the complete external REST API as well as every studio, service, model, file path and job workflow; uploads files, discovers endpoints, chains tools, controls services/models/jobs, reads logs, self-repairs failed services, retries work, suggests routes and emits copy-ready OpenCode prompts. It cannot use internal control endpoints and refuses empty file writes. |
 | **Audio** | ACE-Step 1.5 songs, structured lyrics, LLM drafts, takes and exports, plus DJ Library/Create/Mix tabs for analysis, style models, AI arrangements, adjustable segment count/target-duration mix scenes and effects, plus an integrated SRT tab for Whisper transcription/lyric alignment. Section-aware shared player, lyric section seeking, complete-lyrics copy, SRT export and bass/drums/snare/voice/air-reactive page colours. |
-| **Video** | Audio + SRT → analysed timeline → scene plan → procedural / Diffusers / ComfyUI / QVAC artwork → FFmpeg or OpenCV animation → styled subtitles → final MP4/MKV. QVAC video/image/upscale/model tabs are embedded in Video. Scene editor, timeline, image variants, depth maps, audio-reactive effects, pause/cancel, export panel. |
+| **Video** | Audio + SRT → analysed timeline → scene plan → procedural / Diffusers / ComfyUI / QVAC artwork → FFmpeg or OpenCV animation → styled subtitles → final MP4/MKV. QVAC video/image/upscale tabs are embedded in Video, with model packs installed from Settings → Models. Scene editor, timeline, image variants, depth maps, audio-reactive effects, pause/cancel, export panel. |
 | **Voice** | OmniVoice zero-shot cloning, voice design by attributes, auto voice, Whisper transcription, 646 languages, Piper built-in voices, batch synthesis, retraining, export/import, previews, history. All TTS runs in Docker. |
 | **Subtitles** | MP3 + lyrics → frame-accurate SRT using Whisper word timestamps and dynamic-programming lyric alignment. Transcribe, from-text timing, SRT/VTT/ASS conversion, editable cue table, optional cue translation. |
 | **Images** | Unified picture generation with procedural, Diffusers, ComfyUI and QVAC providers. Text-to-image, image-to-image, upscaling, batches, seeds, samplers, LoRA, metadata sidecars and gallery. |
@@ -56,7 +56,7 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 | **Summary** | Hierarchical T5 summaries in English/Portuguese, available as a tab inside Documents. |
 | **FFmpeg** | 20+ operations in its own image: transcode, extract audio, trim, crop video/image, scale, rotate, concat, overlay, burn subtitles, frames, GIF, merge/replace audio, speed, volume, loudnorm, thumbnails, split, raw argv. Probe, progress and cancellation. |
 | **yt-dlp** | Its own image and a full web UI/REST API: analyse formats, playlists, search, subtitles, thumbnails, metadata, audio extraction, cookies, SponsorBlock, rate limits, retries, proxies, archives and more. |
-| **QVAC** | Tether QVAC SDK in Docker: WAN 2.1/2.2, LTX-2 and MiniMax-H3 text-to-video and image-to-video, QVAC diffusion images, ESRGAN upscaling, model lifecycle, all SDK knobs, mock mode for hardware-free demos. | Imagegen serializes QVAC diffusion calls and retries the registry concurrency rejection.
+| **QVAC** | Tether QVAC SDK in Docker: WAN 2.1/2.2, LTX-2 and MiniMax-H3 text-to-video and image-to-video, QVAC diffusion images and ESRGAN upscaling. Model packs are downloaded, verified and re-checked from Settings → Models; QVAC generation lists only installed packs. Mock mode supports hardware-free demos. | Imagegen serializes QVAC diffusion calls and retries the registry concurrency rejection.
 | **Files** | Shared file explorer with folders, upload, rename, move, copy, delete, preview, ZIP, extract and search. Actions are in a bottom toolbar; text, audio, images and video preview inline. |
 | **Service manager** | Settings → Services enables/disables every optional service, builds images on demand, shows health, opens logs and can delete all shared files. |
 | **Style references** | Music Studio accepts reference songs for a named style; ACE-Step uses the reference audio + prompt guidance on the next generation. |
@@ -345,7 +345,11 @@ Jobs. The catalog covers:
 - OmniVoice
 - Piper voices
 - SD Turbo, SD 1.5, SDXL, SDXL Turbo and FLUX.1 Schnell
-- QVAC SD 2.1
+- QVAC Wan 2.1 T2V/I2V, Wan 2.2 TI2V, LTX-2, FLUX.2-klein, SD 1.x/2.x and Real-ESRGAN model packs
+
+QVAC packs installed here appear automatically in the QVAC model selectors. The
+Settings list is built from the live QVAC catalog, so it only offers packs whose
+model constants exist in the installed SDK.
 
 Installed packs expose a **Re-check** action that queues the same download job and verifies files. Individual Piper voices are available on the Voice page. The same downloads are available from the CLI:
 
@@ -1031,7 +1035,7 @@ curl -OJ -H 'Authorization: Bearer osk_...' \
 | `/api/pdf/*` | PDF | `POST /api/pdf/extract` |
 | `/api/ffmpeg/*` | FFmpeg | `POST /api/ffmpeg/run` |
 | `/api/ytdlp/*` | yt-dlp | `POST /api/ytdlp/download` |
-| `/api/qvac/*` | QVAC | `POST /api/qvac/video` |
+| `/api/qvac/*` | QVAC | `POST /api/qvac/models/install`, `POST /api/qvac/video` |
 | `/api/llm/*` | LLM bridge | `POST /api/llm/chat` |
 
 Every service also has `GET /health`, `GET /catalog` or equivalent discovery
