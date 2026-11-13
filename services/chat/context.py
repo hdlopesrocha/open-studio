@@ -27,7 +27,7 @@ OPEN STUDIO OVERVIEW
 
 PAGES AND CAPABILITIES
 - Chat: persistent sessions and conversations, model selector with a persisted
-  favorite model for new chats, local session history, AI workspace presets, file attachments and an execution agent. The
+  favorite model for new chats, local session history, AI workspace presets, file attachments and an execution agent. Completed exchanges are mirrored as completed Chat jobs in Job Center. The
   Chat service can call whitelisted application tools, start and inspect jobs,
   control services and models, inspect files/logs and use the REST APIs.
 - Audio (/music, shown as Audio in the navigation): ACE-Step song projects,

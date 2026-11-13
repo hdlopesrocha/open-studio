@@ -60,7 +60,7 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 | **Files** | Shared file explorer with folders, upload, rename, move, copy, delete, preview, ZIP, extract and search. Actions are in a bottom toolbar; text, audio, images and video preview inline. |
 | **Service manager** | Settings → Services enables/disables every optional service, builds images on demand, shows health, opens logs and can delete all shared files. |
 | **Style references** | Music Studio accepts reference songs for a named style; ACE-Step uses the reference audio + prompt guidance on the next generation. |
-| **Jobs** | Persistent central job hub with one queue per component, configurable parallelism, live SSE progress, cancellation, retry, artifacts and history. |
+| **Jobs** | Persistent central job hub with one queue per component, configurable parallelism, live SSE progress, cancellation, retry, artifacts and history. Every completed Chat exchange is also recorded as a Chat history job with its original prompt. |
 | **Auth** | First-use password setup (scrypt), HttpOnly sessions, API keys, session revocation, password changes. Every service is behind the gateway. |
 | **UI** | Single Vue 3 app, one design system, right-aligned vertical navbar, responsive layout, consistent cards/forms/tables/job feedback. |
 

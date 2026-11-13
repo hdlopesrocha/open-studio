@@ -39,6 +39,7 @@ JOB_TIMEOUT = env_int("JOB_TIMEOUT_SECONDS", 86_400)
 
 DEFAULT_COMPONENTS = {
     "admin": (8000, 1),
+    "chat": (8000, 1),
     "music": (8000, 1),
     "dj": (8000, 1),
     "video": (8000, 2),
@@ -622,6 +623,52 @@ async def artifacts(job_id: str, artifact: dict[str, Any], x_internal_token: str
     STORE.append_artifacts(job_id, [artifact])
     await broadcast("job.updated", STORE.get(job_id))
     return {"ok": True}
+
+
+@app.post("/internal/jobs/record")
+async def record_job(payload: dict[str, Any], x_internal_token: str = Header(default="")) -> dict[str, Any]:
+    """Persist a completed history entry without putting it on a worker queue."""
+    check_internal(x_internal_token)
+    component = str(payload.get("component") or "").strip()
+    action = str(payload.get("action") or "").strip()
+    if component not in COMPONENTS:
+        raise HTTPException(status_code=422, detail=f"Unknown or missing component '{component}'")
+    if not action:
+        raise HTTPException(status_code=422, detail="action is required")
+    status = str(payload.get("status") or "completed").strip().lower()
+    if status not in {"completed", "failed", "canceled"}:
+        raise HTTPException(status_code=422, detail="record status must be completed, failed or canceled")
+    requested_id = str(payload.get("id") or "").strip()
+    if requested_id:
+        existing = STORE.get(requested_id)
+        if existing:
+            return existing
+    job = STORE.create(
+        {
+            "id": requested_id or None,
+            "component": component,
+            "action": action,
+            "title": str(payload.get("title") or "").strip() or f"{component} · {action.replace('_', ' ')}",
+            "params": payload.get("params") if isinstance(payload.get("params"), dict) else {},
+            "parent_id": payload.get("parent_id"),
+        }
+    )
+    now = utc_now()
+    STORE.update(
+        job["id"],
+        status=status,
+        stage=str(payload.get("stage") or ("Complete" if status == "completed" else status.title())),
+        message=str(payload.get("message") or ("Completed" if status == "completed" else status.title())),
+        progress=100.0 if status == "completed" else 0.0,
+        result=payload.get("result") if isinstance(payload.get("result"), dict) else {},
+        error=str(payload.get("error") or "") or None,
+        started_at=now,
+        finished_at=now,
+    )
+    recorded = STORE.get(job["id"])
+    await broadcast("job.created", recorded)
+    await broadcast("job.updated", recorded)
+    return recorded  # type: ignore[return-value]
 
 
 @app.get("/internal/jobs/{job_id}")

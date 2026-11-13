@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { Activity, Ban, Layers, RefreshCw, RotateCcw, Trash2 } from "lucide-vue-next";
 import { useJobsStore } from "@/stores/jobs";
 import { useToastStore } from "@/stores/toasts";
-import { formatBytes, relativeTime } from "@/lib/api";
+import { api, formatBytes, relativeTime } from "@/lib/api";
+import { DEMO } from "@/lib/types";
+import type { Job } from "@/lib/types";
 import PageHeader from "@/components/PageHeader.vue";
 import JobCard from "@/components/JobCard.vue";
 import TabsBar from "@/components/TabsBar.vue";
@@ -12,36 +14,60 @@ import ProgressBar from "@/components/ProgressBar.vue";
 
 const jobs = useJobsStore();
 const toasts = useToastStore();
-const filter = ref<"active" | "all" | "completed" | "failed">("active");
+const filter = ref<"active" | "all" | "completed" | "failed" | "chat">("active");
 const busy = ref(false);
+const pendingChatJobs = ref<Job[]>([]);
+
+const allJobs = computed(() => {
+  const known = new Set(jobs.items.map((job) => job.id));
+  return [...jobs.items, ...pendingChatJobs.value.filter((job) => !known.has(job.id))];
+});
 
 const tabs = computed(() => [
-  { id: "active", label: "Active", count: jobs.activeCount },
-  { id: "all", label: "All", count: jobs.total },
+  { id: "active", label: "Active", count: allJobs.value.filter((job) => ["queued", "running", "canceling"].includes(job.status)).length },
+  { id: "all", label: "All", count: allJobs.value.length },
   { id: "completed", label: "Completed" },
   { id: "failed", label: "Failed / canceled" },
+  { id: "chat", label: "Chat prompts", count: allJobs.value.filter((job) => job.component === "chat").length },
 ]);
 
 const shown = computed(() => {
-  const list = filter.value === "active" ? jobs.items.filter((job) => ["queued", "running", "canceling"].includes(job.status)) : filter.value === "all" ? jobs.items : filter.value === "completed" ? jobs.items.filter((job) => job.status === "completed") : jobs.items.filter((job) => ["failed", "canceled"].includes(job.status));
+  const list = filter.value === "active" ? allJobs.value.filter((job) => ["queued", "running", "canceling"].includes(job.status)) : filter.value === "all" ? allJobs.value : filter.value === "completed" ? allJobs.value.filter((job) => job.status === "completed") : filter.value === "chat" ? allJobs.value.filter((job) => job.component === "chat") : allJobs.value.filter((job) => ["failed", "canceled"].includes(job.status));
   return [...list].sort((a, b) => b.created_at.localeCompare(a.created_at));
 });
 
 const stats = computed(() => ({
-  queued: jobs.items.filter((job) => job.status === "queued").length,
-  running: jobs.items.filter((job) => job.status === "running").length,
-  completed: jobs.items.filter((job) => job.status === "completed").length,
-  failed: jobs.items.filter((job) => job.status === "failed").length,
+  queued: allJobs.value.filter((job) => job.status === "queued").length,
+  running: allJobs.value.filter((job) => job.status === "running").length,
+  completed: allJobs.value.filter((job) => job.status === "completed").length,
+  failed: allJobs.value.filter((job) => job.status === "failed").length,
 }));
 
+let pendingTimer = 0;
+
 onMounted(() => {
-  if (!jobs.items.length) jobs.refresh();
+  void refresh();
   jobs.loadQueues();
+  pendingTimer = window.setInterval(() => void loadPendingChatJobs(), 5000);
 });
+
+onUnmounted(() => {
+  window.clearInterval(pendingTimer);
+});
+
+async function loadPendingChatJobs() {
+  if (DEMO) return;
+  try {
+    const data = await api.get<{ items: Job[] }>("/chat/pending-jobs");
+    pendingChatJobs.value = data.items || [];
+  } catch {
+    pendingChatJobs.value = [];
+  }
+}
 
 async function refresh() {
   busy.value = true;
-  await jobs.refresh();
+  await Promise.all([jobs.refresh(), loadPendingChatJobs()]);
   busy.value = false;
 }
 
@@ -80,7 +106,7 @@ async function cancelQueued() {
     <PageHeader
       eyebrow="Global job system"
       title="Job center"
-      subtitle="One persistent queue per component. Music, DJ, video, voice, subtitles, images, documents, models, FFmpeg, yt-dlp and QVAC run without blocking each other."
+      subtitle="One persistent queue per component. Chat prompts, music, DJ, video, voice, subtitles, images, documents, models, FFmpeg, yt-dlp and QVAC share one history without blocking each other."
     >
       <template #actions>
         <button class="btn btn-sm" :disabled="busy" @click="refresh"><RefreshCw :size="13" :class="{ spin: busy }" /> Refresh</button>
@@ -151,7 +177,7 @@ async function cancelQueued() {
       </div>
       <div class="panel-body stack">
         <JobCard v-for="job in shown" :key="job.id" :job="job" @cancel="cancel" @retry="retry" @remove="remove" />
-        <EmptyState v-if="!shown.length" :icon="Activity" title="Nothing in this queue" message="Start a music generation, a video render, a voice take, an SRT alignment or any media operation and it will show up here with live progress and artifacts.">
+        <EmptyState v-if="!shown.length" :icon="Activity" title="Nothing in this queue" message="Send a Chat prompt, start a music generation, a video render, a voice take, an SRT alignment or any media operation and it will show up here with live progress and artifacts.">
           <RouterLink to="/" class="btn btn-sm">Browse studios</RouterLink>
         </EmptyState>
       </div>

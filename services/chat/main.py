@@ -17,7 +17,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from openstudio_common import INTERNAL_TOKEN, STATE_ROOT, create_service_app, env, service_url, utc_now
+from openstudio_common import INTERNAL_TOKEN, JOBHUB_URL, STATE_ROOT, create_service_app, env, service_url, utc_now
 
 from .context import APP_CONTEXT
 from .tools import AGENT_TOOL_GUIDE, TOOL_GUIDE, TOOL_NAMES, attachment_context, execute_tool, repair_tool_failure, set_chat_prompt
@@ -40,6 +40,7 @@ AGENT_TOOL_CALLS = int(env("CHAT_AGENT_TOOL_CALLS", "8"))
 AGENT_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TIMEOUT_SECONDS", "240"))
 AGENT_LLM_TIMEOUT_SECONDS = float(env("CHAT_AGENT_LLM_TIMEOUT_SECONDS", "120"))
 AGENT_TOOL_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TOOL_TIMEOUT_SECONDS", "90"))
+CHAT_RECORD_JOBS = env("CHAT_RECORD_JOBS", "1").strip().lower() not in {"0", "false", "no", "off"}
 DB_PATH = Path(env("CHAT_DB_PATH", str(STATE_ROOT / "chat.db")))
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -109,6 +110,11 @@ class ChatStore:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS job_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );
             """
         )
@@ -221,6 +227,34 @@ class ChatStore:
                     """,
                     (key, cleaned, _now()),
                 )
+            self._conn.commit()
+
+    def queue_job_history(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO job_outbox(payload, created_at) VALUES(?, ?)",
+                (json.dumps(payload, ensure_ascii=False), _now()),
+            )
+            self._conn.commit()
+
+    def pending_job_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, payload, created_at FROM job_outbox ORDER BY id LIMIT ?", (limit,)
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                result.append({"id": row["id"], "payload": payload, "created_at": row["created_at"]})
+        return result
+
+    def delete_job_history(self, outbox_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM job_outbox WHERE id=?", (outbox_id,))
             self._conn.commit()
 
     def delete_session(self, session_id: str) -> bool:
@@ -1050,6 +1084,125 @@ async def list_messages(session_id: str) -> dict[str, Any]:
     return {"items": items, "total": len(items)}
 
 
+async def _record_chat_job(
+    *,
+    session_id: str,
+    prompt: str,
+    user_message: dict[str, Any],
+    assistant_message: dict[str, Any],
+    assistant_content: str,
+    assistant_model: str,
+    attachments: list[str],
+    actions: list[dict[str, Any]],
+) -> None:
+    """Mirror a completed chat exchange into Job Center history."""
+    if not CHAT_RECORD_JOBS:
+        return
+    cleaned = " ".join((prompt or "").split())
+    body = {
+        "id": f"chat-{user_message.get('id') or uuid.uuid4().hex}",
+        "component": "chat",
+        "action": "prompt",
+        "title": f"Chat · {cleaned[:90] or 'New conversation'}",
+        "status": "completed",
+        "stage": "Complete",
+        "message": "Chat reply completed.",
+        "params": {
+            "chat_prompt": (prompt or "").strip()[:4000],
+            "session_id": session_id,
+            "user_message_id": user_message.get("id"),
+            "assistant_message_id": assistant_message.get("id"),
+            "model": assistant_model,
+            "attachments": attachments[:12],
+        },
+        "result": {
+            "message": assistant_content[:8000],
+            "session_id": session_id,
+            "assistant_message_id": assistant_message.get("id"),
+            "model": assistant_model,
+            "action_count": len(actions),
+            "tools": [str(action.get("tool")) for action in actions if isinstance(action, dict)][:16],
+        },
+    }
+    STORE.queue_job_history(body)
+    await _flush_chat_jobs()
+
+
+@router.get("/pending-jobs")
+async def pending_chat_jobs() -> dict[str, Any]:
+    """Expose queued Chat history so Jobs can show prompts before sync."""
+    items = []
+    for entry in STORE.pending_job_history(limit=100):
+        payload = entry["payload"]
+        created = str(entry.get("created_at") or "")
+        items.append(
+            {
+                "id": payload.get("id"),
+                "component": "chat",
+                "action": "prompt",
+                "title": payload.get("title") or "Chat · prompt",
+                "status": "completed",
+                "stage": "Pending sync",
+                "message": "Waiting for Job Center sync.",
+                "progress": 100.0,
+                "params": payload.get("params") or {},
+                "result": payload.get("result") or {},
+                "warnings": [],
+                "artifacts": [],
+                "created_at": created,
+                "updated_at": created,
+                "pending": True,
+            }
+        )
+    return {"items": items, "total": len(items)}
+
+
+async def _flush_chat_jobs() -> None:
+    """Send queued Chat history records once Job Hub supports them."""
+    pending = STORE.pending_job_history()
+    if not pending:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=3.0, headers=_headers()) as client:
+            for item in pending:
+                response = await client.post(f"{JOBHUB_URL}/internal/jobs/record", json=item["payload"])
+                if response.status_code in {404, 405}:
+                    return
+                if response.status_code >= 400:
+                    log.warning("Could not record chat job: HTTP %s %s", response.status_code, response.text[:400])
+                    return
+                STORE.delete_job_history(int(item["id"]))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not flush chat job history: %s", exc)
+
+
+async def _flush_chat_jobs_loop() -> None:
+    while True:
+        await asyncio.sleep(20.0)
+        try:
+            await _flush_chat_jobs()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.warning("Chat job history flush failed", exc_info=True)
+
+
+_CHAT_JOB_FLUSH_TASK: asyncio.Task[None] | None = None
+
+
+async def _start_chat_jobs() -> None:
+    global _CHAT_JOB_FLUSH_TASK
+    _CHAT_JOB_FLUSH_TASK = asyncio.create_task(_flush_chat_jobs_loop(), name="chat-job-history-flush")
+
+
+async def _stop_chat_jobs() -> None:
+    global _CHAT_JOB_FLUSH_TASK
+    if _CHAT_JOB_FLUSH_TASK is not None:
+        _CHAT_JOB_FLUSH_TASK.cancel()
+        await asyncio.gather(_CHAT_JOB_FLUSH_TASK, return_exceptions=True)
+        _CHAT_JOB_FLUSH_TASK = None
+
+
 @router.post("/sessions/{session_id}/messages", status_code=201)
 async def send_message(session_id: str, payload: MessageCreate) -> dict[str, Any]:
     session = STORE.get_session(session_id)
@@ -1080,6 +1233,16 @@ async def send_message(session_id: str, payload: MessageCreate) -> dict[str, Any
         "assistant",
         assistant_content,
         metadata={"model": assistant_model, "usage": usage, "actions": actions},
+    )
+    await _record_chat_job(
+        session_id=session_id,
+        prompt=payload.content,
+        user_message=user_message,
+        assistant_message=assistant_message,
+        assistant_content=assistant_content,
+        assistant_model=assistant_model,
+        attachments=attachments,
+        actions=actions,
     )
     return {
         "user_message": user_message,
@@ -1119,4 +1282,6 @@ app = create_service_app(
     "Persistent local ChatGPT-style sessions backed by the LLM bridge.",
     version=VERSION,
     extra_routers=[router],
+    on_startup=_start_chat_jobs,
+    on_shutdown=_stop_chat_jobs,
 )

@@ -67,6 +67,7 @@ export interface Job {
   started_at?: string | null;
   finished_at?: string | null;
   updated_at: string;
+  pending?: boolean;
 }
 
 export interface FileInfo {

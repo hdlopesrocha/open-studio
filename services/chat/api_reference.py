@@ -14,6 +14,7 @@ POST /api/admin/services/{name}/restart
 GET /api/chat/context
 GET /api/chat/health
 GET /api/chat/models
+GET /api/chat/pending-jobs
 GET /api/chat/preferences
 PUT /api/chat/preferences
 GET /api/chat/sessions

@@ -26,11 +26,17 @@ def _headers(module):
 def test_chat_session_and_message_flow(tmp_path, monkeypatch):
     module = _load_chat(tmp_path, monkeypatch)
 
+    recorded: list[dict] = []
+
     async def fake_llm(session, messages, payload):
         assert messages[-1]["role"] == "user"
         return {"content": f"reply to: {messages[-1]['content']}", "model": "test-model", "usage": {}}
 
+    async def fake_record(**kwargs):
+        recorded.append(kwargs)
+
     monkeypatch.setattr(module, "_call_llm", fake_llm)
+    monkeypatch.setattr(module, "_record_chat_job", fake_record)
     client = TestClient(module.app)
     headers = _headers(module)
 
@@ -57,6 +63,7 @@ def test_chat_session_and_message_flow(tmp_path, monkeypatch):
     body = reply.json()
     assert body["assistant_message"]["content"].startswith("reply to:")
     assert body["session"]["message_count"] == 2
+    assert recorded and recorded[0]["prompt"] == "How do I make a DJ mix?"
 
     messages = client.get(f"/api/chat/sessions/{session_id}/messages", headers=headers)
     assert messages.status_code == 200
@@ -145,6 +152,38 @@ def test_chat_favorite_model_defaults_new_sessions(tmp_path, monkeypatch):
     fallback = client.post("/api/chat/sessions", headers=headers, json={"title": "Fallback"})
     assert fallback.status_code == 201
     assert fallback.json()["model"] == module.DEFAULT_MODEL
+
+
+def test_chat_job_history_uses_a_durable_outbox(tmp_path, monkeypatch):
+    module = _load_chat(tmp_path, monkeypatch)
+    payload = {"component": "chat", "action": "prompt", "title": "Chat · test"}
+    module.STORE.queue_job_history(payload)
+    pending = module.STORE.pending_job_history()
+    assert len(pending) == 1
+    assert pending[0]["payload"] == payload
+    module.STORE.delete_job_history(pending[0]["id"])
+    assert module.STORE.pending_job_history() == []
+
+
+def test_chat_pending_jobs_exposes_outbox_entries(tmp_path, monkeypatch):
+    module = _load_chat(tmp_path, monkeypatch)
+    payload = {
+        "id": "chat-test",
+        "component": "chat",
+        "action": "prompt",
+        "title": "Chat · pending",
+        "params": {"chat_prompt": "pending prompt"},
+        "result": {"message": "pending answer", "session_id": "s1"},
+    }
+    module.STORE.queue_job_history(payload)
+    client = TestClient(module.app)
+    response = client.get("/api/chat/pending-jobs", headers=_headers(module))
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == "chat-test"
+    assert items[0]["pending"] is True
+    assert items[0]["params"]["chat_prompt"] == "pending prompt"
 
 
 def test_chat_context_describes_open_studio(tmp_path, monkeypatch):

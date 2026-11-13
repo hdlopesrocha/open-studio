@@ -9,6 +9,7 @@ import ProgressBar from "./ProgressBar.vue";
 const props = withDefaults(defineProps<{ job: Job; compact?: boolean }>(), { compact: false });
 const emit = defineEmits<{ cancel: [id: string]; retry: [id: string]; remove: [id: string] }>();
 const active = computed(() => ["queued", "running", "canceling"].includes(props.job.status));
+const pending = computed(() => Boolean(props.job.pending));
 const elapsed = computed(() => {
   const start = props.job.started_at ? new Date(props.job.started_at).getTime() : new Date(props.job.created_at).getTime();
   const end = props.job.finished_at ? new Date(props.job.finished_at).getTime() : Date.now();
@@ -22,9 +23,13 @@ const resultFiles = computed(() => {
   const seen = new Set(artifacts.value.map((item) => item.path));
   return files.filter((item: any) => item?.path && !seen.has(item.path));
 });
+const chatPromptText = computed(() => {
+  const candidate = props.job.params?.chat_prompt;
+  return typeof candidate === "string" ? candidate.trim().slice(0, 1200) : "";
+});
 const promptText = computed(() => {
   const params = props.job.params || {};
-  const candidate = params.chat_prompt || params.prompt || params.caption || params.instruction || params.text || params.lyrics || params.brief || params.query;
+  const candidate = params.prompt || params.caption || params.instruction || params.text || params.lyrics || params.brief || params.query;
   if (typeof candidate !== "string") return "";
   return candidate.trim().slice(0, 1200);
 });
@@ -56,6 +61,7 @@ const outputLog = computed(() => {
       <span>{{ job.warnings.slice(-2).join(" · ") }}</span>
     </div>
     <div v-if="job.error" class="alert error">{{ job.error }}</div>
+    <div v-if="chatPromptText" class="job-prompt"><span class="label">Chat prompt</span><span>{{ chatPromptText }}</span></div>
     <div v-if="promptText" class="job-prompt"><span class="label">Prompt</span><span>{{ promptText }}</span></div>
     <pre v-if="outputLog" class="code" style="max-height: 150px">{{ outputLog }}</pre>
     <div v-if="artifacts.length || resultFiles.length" class="row" style="gap: 6px">
@@ -74,8 +80,8 @@ const outputLog = computed(() => {
     </div>
     <div class="row" style="gap: 6px">
       <button v-if="active" class="btn btn-sm btn-danger" @click="emit('cancel', job.id)"><Ban :size="12" /> Cancel</button>
-      <button v-if="job.status === 'failed' || job.status === 'canceled'" class="btn btn-sm" @click="emit('retry', job.id)"><RotateCcw :size="12" /> Retry</button>
-      <button v-if="!active" class="btn btn-sm btn-ghost" @click="emit('remove', job.id)"><Trash2 :size="12" /> Delete</button>
+      <button v-if="!pending && (job.status === 'failed' || job.status === 'canceled')" class="btn btn-sm" @click="emit('retry', job.id)"><RotateCcw :size="12" /> Retry</button>
+      <button v-if="!active && !pending" class="btn btn-sm btn-ghost" @click="emit('remove', job.id)"><Trash2 :size="12" /> Delete</button>
       <a v-if="job.result?.video_path" class="btn btn-sm btn-ghost" :href="fileUrl(job.result.video_path)" target="_blank" rel="noopener"><ExternalLink :size="12" /> Open</a>
     </div>
   </div>
