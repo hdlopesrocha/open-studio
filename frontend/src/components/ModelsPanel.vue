@@ -40,6 +40,8 @@ function demoItems(): ModelItem[] {
     { id: "whisper-large-v3", label: "Whisper large-v3", group: "Subtitles", description: "Highest-quality transcription model.", size: "~3.0 GB", kind: "whisper", service: "srt", installed: false, detail: "not downloaded" },
     { id: "piper-voices", label: "Piper built-in voices", group: "Voice", description: "15 male and female voices.", size: "~1.0 GB", kind: "piper", service: "voice", installed: true, detail: "15/15 voices installed" },
     { id: "image-sdxl", label: "SDXL Base 1.0", group: "Images", description: "1024px diffusion model.", size: "~7 GB", kind: "diffusers", service: "imagegen", installed: false, detail: "not downloaded" },
+    { id: "qvac-wan2-1-t2v", label: "QVAC · Wan 2.1 T2V", group: "QVAC", description: "Wan text-to-video diffusion, UMT5 encoder and VAE.", size: "~14.5 GB", kind: "qvac", service: "qvac", installed: true, detail: "3/3 assets installed" },
+    { id: "qvac-flux2-klein", label: "QVAC · FLUX.2-klein", group: "QVAC", description: "FLUX.2 image diffusion, Qwen3 encoder and VAE.", size: "~5.2 GB", kind: "qvac", service: "qvac", installed: false, detail: "0/3 assets installed" },
   ];
 }
 
@@ -123,7 +125,7 @@ onMounted(() => {
     <div class="panel-head">
       <div>
         <h3>Models</h3>
-        <p>Download model packs once. They are stored under <span class="mono">data/</span> and survive restarts.</p>
+        <p>Download model packs once. QVAC packs installed here become the selectable models in QVAC generation. Everything is stored under <span class="mono">data/</span> and survives restarts.</p>
       </div>
       <div class="row" style="gap: 7px">
         <span class="chip success">{{ installedCount }}/{{ totalCount }} installed</span>

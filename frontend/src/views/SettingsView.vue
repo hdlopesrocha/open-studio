@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { Copy, KeyRound, Loader2, RefreshCw, Server, ShieldCheck, Trash2, WalletCards, X } from "lucide-vue-next";
 import { api, formatBytes, relativeTime } from "@/lib/api";
 import { useSystemStore } from "@/stores/system";
@@ -17,7 +18,7 @@ import ModelsPanel from "@/components/ModelsPanel.vue";
 const system = useSystemStore();
 const auth = useAuthStore();
 const toasts = useToastStore();
-const tab = ref("services");
+const route = useRoute();
 
 const sessions = ref<any[]>([]);
 const keys = ref<any[]>([]);
@@ -38,6 +39,14 @@ const tabs = [
   { id: "system", label: "System" },
   { id: "models", label: "Models & commands" },
 ];
+const requestedTab = typeof route.query.tab === "string" ? route.query.tab : "";
+const tab = ref(tabs.some((entry) => entry.id === requestedTab) ? requestedTab : "services");
+watch(
+  () => route.query.tab,
+  (next) => {
+    if (typeof next === "string" && tabs.some((entry) => entry.id === next)) tab.value = next;
+  },
+);
 
 onMounted(async () => {
   system.load(true);

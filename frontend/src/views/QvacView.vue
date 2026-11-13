@@ -14,7 +14,6 @@ import {
   HardDrive,
   Image as ImageIcon,
   Layers,
-  ListChecks,
   Loader2,
   Maximize2,
   MemoryStick,
@@ -23,7 +22,6 @@ import {
   Plus,
   RefreshCw,
   Server,
-  Settings2,
   Shield,
   Shuffle,
   SlidersHorizontal,
@@ -32,7 +30,6 @@ import {
   Video,
   Wand2,
   X,
-  Zap,
 } from "lucide-vue-next";
 import { api, downloadUrl, fileUrl, formatBytes, formatDuration, relativeTime } from "@/lib/api";
 import type { Job } from "@/lib/types";
@@ -56,17 +53,15 @@ const system = useSystemStore();
 const toasts = useToastStore();
 
 const tab = ref("video");
-const tabs = computed(() => [
+const tabs = [
   { id: "video", label: "Video" },
   { id: "image", label: "Image" },
   { id: "upscale", label: "Upscale" },
-  { id: "models", label: "Models", count: familyRows.value.length },
-]);
+];
 
 const catalog = ref<any>(DEMO ? demoQvacCatalog : null);
 const status = ref<any>(DEMO ? demoQvacStatus : null);
 const busy = ref(false);
-const busyStatus = ref(false);
 const qvacService = computed(() => system.service("qvac"));
 
 const activeVideoId = ref("");
@@ -101,6 +96,37 @@ function demoConstraints(id: string): Record<string, any> {
   return { dimensionMultipleOf: 16, frames: "4k+1", maxFrames: 81, minFrames: 17, defaultFps: 16 };
 }
 
+const mockRuntime = computed(() => DEMO || Boolean(status.value?.mock ?? catalog.value?.mock));
+
+function familyInstalled(value: any): boolean {
+  if (!value?.install) return true;
+  return mockRuntime.value || Boolean(value.install.installed);
+}
+
+function modelInstalled(value: any): boolean {
+  const installed = value?.installed;
+  if (typeof installed === "boolean") return mockRuntime.value || installed;
+  return mockRuntime.value || Boolean(value?.available || value?.resolved || value?.mockAvailable);
+}
+
+function installedModelsFor(family: string, kind?: string): any[] {
+  return (catalog.value?.models || []).filter(
+    (model: any) =>
+      model.family === family &&
+      (!kind || model.kind === kind) &&
+      modelInstalled(model),
+  );
+}
+
+function firstDiffusionModel(family: string, modePart: string): string {
+  const models = installedModelsFor(family).filter(
+    (model: any) =>
+      model.kind === "diffusion" &&
+      (!modePart || (model.modes || []).some((mode: string) => mode.includes(modePart))),
+  );
+  return models[0]?.name || "";
+}
+
 const videoFamilies = computed<any[]>(() => {
   if (DEMO) {
     return demoQvacCatalog.families
@@ -114,50 +140,71 @@ const videoFamilies = computed<any[]>(() => {
         vram: family.vram,
         installed: family.installed,
         modelSrc: defaultModelForFamily(family.id),
+        requires: {},
       }));
   }
   const families = catalog.value?.model_families?.video || {};
-  return Object.entries(families).map(([key, value]: [string, any]) => ({
-    key,
-    label: value.label || key,
-    modes: value.modes || ["txt2vid"],
-    constraints: value.constraints || {},
-    params: "",
-    vram: "",
-    installed: Boolean((catalog.value?.models || []).some((model: any) => model.family === key && (model.available || model.resolved || model.mockAvailable))),
-    modelSrc: (catalog.value?.models || []).find((model: any) => model.family === key && model.kind === "diffusion")?.name || "",
-  }));
+  return Object.entries(families)
+    .filter(([, value]: [string, any]) => familyInstalled(value))
+    .map(([key, value]: [string, any]) => ({
+      key,
+      label: value.label || key,
+      modes: value.modes || ["txt2vid"],
+      constraints: value.constraints || {},
+      params: "",
+      vram: "",
+      installed: true,
+      modelSrc: firstDiffusionModel(key, "vid"),
+      requires: value.requires || {},
+      install: value.install || {},
+    }));
 });
 
 const imageFamilies = computed<any[]>(() => {
   if (DEMO) {
     return [
-      { key: "flux2_klein", label: "FLUX.2-klein", modes: ["txt2img", "img2img"], params: "4B", vram: "8 GB", installed: true, modelSrc: "FLUX_2_KLEIN_4B_Q4_0", constraints: { dimensionMultipleOf: 8, supportsUpscale: true } },
-      { key: "qwen_image_2_1", label: "Qwen-Image-2.1", modes: ["txt2img", "img2img", "reference"], params: "20B", vram: "16 GB", installed: false, modelSrc: "QWEN_IMAGE_2_1", constraints: { dimensionMultipleOf: 8, supportsUpscale: false } },
-      { key: "ideogram4", label: "Ideogram 4", modes: ["txt2img"], params: "9B", vram: "16 GB", installed: false, modelSrc: "IDEOGRAM_4", constraints: { dimensionMultipleOf: 8, supportsUpscale: true } },
-      { key: "sd1_sd2", label: "Stable Diffusion 1.x / 2.x", modes: ["txt2img", "img2img"], params: "1B", vram: "4 GB", installed: true, modelSrc: "SD_V2_1_1B_Q8_0", constraints: { dimensionMultipleOf: 8, supportsUpscale: true } },
+      { key: "flux2_klein", label: "FLUX.2-klein", modes: ["txt2img", "img2img"], params: "4B", vram: "8 GB", installed: true, modelSrc: "FLUX_2_KLEIN_4B_Q4_0", constraints: { dimensionMultipleOf: 8, supportsUpscale: true }, requires: {} },
+      { key: "qwen_image_2_1", label: "Qwen-Image-2.1", modes: ["txt2img", "img2img", "reference"], params: "20B", vram: "16 GB", installed: false, modelSrc: "QWEN_IMAGE_2_1", constraints: { dimensionMultipleOf: 8, supportsUpscale: false }, requires: {} },
+      { key: "ideogram4", label: "Ideogram 4", modes: ["txt2img"], params: "9B", vram: "16 GB", installed: false, modelSrc: "IDEOGRAM_4", constraints: { dimensionMultipleOf: 8, supportsUpscale: true }, requires: {} },
+      { key: "sd1_sd2", label: "Stable Diffusion 1.x / 2.x", modes: ["txt2img", "img2img"], params: "1B", vram: "4 GB", installed: true, modelSrc: "SD_V2_1_1B_Q8_0", constraints: { dimensionMultipleOf: 8, supportsUpscale: true }, requires: {} },
     ];
   }
   const families = catalog.value?.model_families?.image || {};
   return Object.entries(families)
-    .filter(([, value]: [string, any]) => (value.modes || []).some((mode: string) => mode !== "upscale"))
+    .filter(([, value]: [string, any]) => familyInstalled(value) && (value.modes || []).some((mode: string) => mode !== "upscale"))
     .map(([key, value]: [string, any]) => ({
       key,
       label: value.label || key,
       modes: value.modes || [],
       params: "",
       vram: "",
-      installed: Boolean((catalog.value?.models || []).some((model: any) => model.family === key && (model.available || model.resolved || model.mockAvailable))),
-      modelSrc: (catalog.value?.models || []).find((model: any) => model.family === key && model.kind === "diffusion")?.name || "",
+      installed: true,
+      modelSrc: firstDiffusionModel(key, "img"),
       constraints: value.constraints || {},
+      requires: value.requires || {},
+      install: value.install || {},
     }));
 });
 
 const upscaleModels = computed<string[]>(() => {
+  if (DEMO) return ["REALESRGAN_X4PLUS", "REALESRGAN_X4PLUS_ANIME_6B"];
   const models = (catalog.value?.models || [])
-    .filter((model: any) => model.family === "esrgan" || (model.modes || []).includes("upscale"))
+    .filter(
+      (model: any) =>
+        model.family === "esrgan" &&
+        modelInstalled(model) &&
+        (model.modes || []).includes("upscale"),
+    )
     .map((model: any) => model.name);
-  return models.length ? models : ["REALESRGAN_X4PLUS", "REALESRGAN_X4PLUS_ANIME_6B"];
+  return models;
+});
+
+const hasInstalledFamilies = computed(
+  () => videoFamilies.value.length > 0 || imageFamilies.value.length > 0 || upscaleModels.value.length > 0,
+);
+const installedModelCount = computed(() => {
+  if (DEMO) return 5;
+  return (catalog.value?.models || []).filter((model: any) => modelInstalled(model)).length;
 });
 
 function defaultModelForFamily(family: string): string {
@@ -179,21 +226,31 @@ function defaultImageModel(family: string): string {
 }
 
 const videoModelOptions = computed<string[]>(() => {
-  const models = (catalog.value?.models || [])
-    .filter((model: any) => model.kind === "diffusion" && (model.modes || []).some((mode: string) => mode.includes("vid")))
+  if (DEMO) {
+    const fallback = ["WAN2_1_T2V_1_3B_FP16", "WAN2_1_I2V_14B_Q4_K_M", "WAN2_2_TI2V_5B_Q5_K_S", "LTX_2_3_22B_Q5_K_M", "MINIMAX_H3"];
+    return fallback.includes(video.model) ? fallback : [video.model, ...fallback];
+  }
+  return installedModelsFor(video.family)
+    .filter(
+      (model: any) =>
+        model.kind === "diffusion" &&
+        (model.modes || []).some((mode: string) => mode.includes("vid")),
+    )
     .map((model: any) => model.name);
-  const fallback = ["WAN2_1_T2V_1_3B_FP16", "WAN2_1_I2V_14B_Q4_K_M", "WAN2_2_TI2V_5B_Q5_K_S", "LTX_2_3_22B_Q5_K_M", "MINIMAX_H3"];
-  const list = models.length ? models : fallback;
-  return list.includes(video.model) ? list : [video.model, ...list];
 });
 
 const imageModelOptions = computed<string[]>(() => {
-  const models = (catalog.value?.models || [])
-    .filter((model: any) => model.kind === "diffusion" && (model.modes || []).some((mode: string) => mode.includes("img")))
+  if (DEMO) {
+    const fallback = ["FLUX_2_KLEIN_4B_Q4_0", "QWEN_IMAGE_2_1", "IDEOGRAM_4", "SD_V2_1_1B_Q8_0"];
+    return fallback.includes(image.model) ? fallback : [image.model, ...fallback];
+  }
+  return installedModelsFor(image.family)
+    .filter(
+      (model: any) =>
+        model.kind === "diffusion" &&
+        (model.modes || []).some((mode: string) => mode.includes("img")),
+    )
     .map((model: any) => model.name);
-  const fallback = ["FLUX_2_KLEIN_4B_Q4_0", "QWEN_IMAGE_2_1", "IDEOGRAM_4", "SD_V2_1_1B_Q8_0"];
-  const list = models.length ? models : fallback;
-  return list.includes(image.model) ? list : [image.model, ...list];
 });
 
 /* ------------------------------------------------------------------ */
@@ -276,9 +333,9 @@ const isWan22A14b = computed(() => video.family.toLowerCase().includes("a14b"));
 const isMinimax = computed(() => video.family.toLowerCase().includes("minimax"));
 
 function onVideoFamilyChange() {
-  video.model = defaultModelForFamily(video.family);
-  modelConfig.modelSrc = video.model;
   const family = selectedVideoFamily.value;
+  video.model = family?.modelSrc || defaultModelForFamily(video.family);
+  modelConfig.modelSrc = video.model;
   if (family?.modes?.length && !family.modes.includes(video.mode)) {
     video.mode = family.modes[0];
   }
@@ -373,9 +430,24 @@ function compact(values: Record<string, any>): Record<string, any> {
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined && value !== null && value !== ""));
 }
 
+function modelSourcesFor(family: string, kind: "video" | "image"): Record<string, string> {
+  const requires = catalog.value?.model_families?.[kind]?.[family]?.requires || {};
+  const result: Record<string, string> = {};
+  for (const [field, values] of Object.entries(requires)) {
+    if (field === "modelSrc" || !Array.isArray(values)) continue;
+    const candidate = values.find(
+      (value) => typeof value === "string" && value.trim() && !value.trim().startsWith("<"),
+    );
+    if (candidate) result[field] = candidate;
+  }
+  return result;
+}
+
 function buildModelConfig(overrides: { modelSrc?: string; family?: string; kind?: string } = {}): Record<string, any> {
+  const kind = overrides.kind || "video";
+  const family = overrides.family || video.family;
   const config: Record<string, any> = compact({
-    modelSrc: overrides.modelSrc || modelConfig.modelSrc || video.model,
+    modelSrc: overrides.modelSrc || video.model,
     modelType: modelConfig.modelType,
     device: modelConfig.device,
     threads: Number(modelConfig.threads) || undefined,
@@ -388,30 +460,36 @@ function buildModelConfig(overrides: { modelSrc?: string; family?: string; kind?
     stream_layers: modelConfig.stream_layers,
     flash_attn: modelConfig.flash_attn,
   });
-  if ((overrides.kind || "video") === "video") config.mode = "video";
-  if ((overrides.kind || "video") === "upscale") config.mode = "upscale";
-  if ((overrides.kind || "video") === "video" && (!overrides.family || overrides.family === video.family)) {
+  if (kind === "video") {
+    config.mode = "video";
+    const catalogFamily = Boolean(catalog.value?.model_families?.video?.[family]);
+    const generatedSources = modelSourcesFor(family, "video");
     Object.assign(
       config,
-      compact({
-        t5XxlModelSrc: modelConfig.t5XxlModelSrc,
-        llmModelSrc: modelConfig.llmModelSrc,
-        vaeModelSrc: modelConfig.vaeModelSrc,
-        clipVisionModelSrc: modelConfig.clipVisionModelSrc,
-        audioVaeModelSrc: modelConfig.audioVaeModelSrc,
-        embeddingsConnectorsModelSrc: modelConfig.embeddingsConnectorsModelSrc,
-        projectionModelSrc: modelConfig.projectionModelSrc,
-        uncondModelSrc: modelConfig.uncondModelSrc,
-        highNoiseDiffusionModelSrc: modelConfig.highNoiseDiffusionModelSrc,
-        clipLModelSrc: modelConfig.clipLModelSrc,
-        clipGModelSrc: modelConfig.clipGModelSrc,
-      }),
+      catalogFamily
+        ? generatedSources
+        : compact({
+            t5XxlModelSrc: modelConfig.t5XxlModelSrc,
+            llmModelSrc: modelConfig.llmModelSrc,
+            vaeModelSrc: modelConfig.vaeModelSrc,
+            clipVisionModelSrc: modelConfig.clipVisionModelSrc,
+            audioVaeModelSrc: modelConfig.audioVaeModelSrc,
+            embeddingsConnectorsModelSrc: modelConfig.embeddingsConnectorsModelSrc,
+            projectionModelSrc: modelConfig.projectionModelSrc,
+            uncondModelSrc: modelConfig.uncondModelSrc,
+            highNoiseDiffusionModelSrc: modelConfig.highNoiseDiffusionModelSrc,
+            clipLModelSrc: modelConfig.clipLModelSrc,
+            clipGModelSrc: modelConfig.clipGModelSrc,
+          }),
     );
   }
+  if (kind === "upscale") config.mode = "upscale";
   return config;
 }
 
 function validateVideo(): string | null {
+  if (!selectedVideoFamily.value) return "Install a QVAC video model in Settings → Models first.";
+  if (!video.model.trim()) return "Choose an installed QVAC video model.";
   if (!video.prompt.trim()) return "Enter a prompt for the video.";
   if (video.mode === "img2vid" && !video.init_image.trim()) return "img2vid needs an init image.";
   const familyModes = selectedVideoFamily.value?.modes || [];
@@ -436,7 +514,7 @@ function validateVideo(): string | null {
 function buildVideoParams(): Record<string, any> {
   const params: Record<string, any> = compact({
     family: video.family,
-    model: modelConfig.modelSrc || video.model,
+    model: video.model,
     mode: video.mode,
     prompt: video.prompt.trim(),
     negative_prompt: video.negative_prompt.trim(),
@@ -514,8 +592,8 @@ const selectedImageFamily = computed(() => imageFamilies.value.find((family) => 
 const imageDimensionMultiple = computed(() => Number(selectedImageFamily.value?.constraints?.dimensionMultipleOf) || 8);
 
 function onImageFamilyChange() {
-  image.model = defaultImageModel(image.family);
   const family = selectedImageFamily.value;
+  image.model = family?.modelSrc || defaultImageModel(image.family);
   if (family?.modes?.length && !family.modes.includes("txt2img")) {
     // All image families in this catalog support txt2img at minimum.
   }
@@ -543,9 +621,11 @@ function removeImageInitImage(index: number) {
 }
 
 function buildImageConfig(): Record<string, any> {
-  const sources: Record<string, Record<string, string>> = {
+  const fallbackSources: Record<string, Record<string, string>> = {
     flux2_klein: { llmModelSrc: "QWEN3_4B_Q4_K_M", vaeModelSrc: "FLUX_2_KLEIN_4B_VAE" },
   };
+  const catalogFamily = Boolean(catalog.value?.model_families?.image?.[image.family]);
+  const generatedSources = modelSourcesFor(image.family, "image");
   return compact({
     modelSrc: image.model,
     modelType: "sdcpp-generation",
@@ -557,11 +637,13 @@ function buildImageConfig(): Record<string, any> {
     backend: modelConfig.backend,
     max_vram: modelConfig.max_vram,
     prediction: image.family === "flux2_klein" && image.init_image ? "flux2_flow" : undefined,
-    ...(sources[image.family] || {}),
+    ...(catalogFamily ? generatedSources : fallbackSources[image.family] || {}),
   });
 }
 
 function validateImage(): string | null {
+  if (!selectedImageFamily.value) return "Install a QVAC image model in Settings → Models first.";
+  if (!image.model.trim()) return "Choose an installed QVAC image model.";
   if (!image.prompt.trim()) return "Enter an image prompt.";
   if (image.width % imageDimensionMultiple.value !== 0) return `Width must be a multiple of ${imageDimensionMultiple.value}.`;
   if (image.height % imageDimensionMultiple.value !== 0) return `Height must be a multiple of ${imageDimensionMultiple.value}.`;
@@ -615,6 +697,7 @@ function setUpscaleImage(path: string) {
 }
 
 function validateUpscale(): string | null {
+  if (!upscaleModels.value.length || !upscale.model) return "Install the QVAC Real-ESRGAN pack in Settings → Models first.";
   if (!upscale.image_path.trim()) return "Choose an image to upscale.";
   if (upscale.repeats < 1 || upscale.repeats > 4) return "Upscale repeats must be between 1 and 4.";
   return null;
@@ -669,7 +752,6 @@ const videoStats = computed<any>(() => videoData.value?.stats || null);
 const imageStats = computed<any>(() => imageData.value?.stats || null);
 const upscaleStats = computed<any>(() => upscaleData.value?.stats || null);
 
-const history = computed<Job[]>(() => (DEMO ? demoHistory.value : jobs.items.filter((job) => job.component === "qvac").slice(0, 8)));
 const activeJobs = computed(() => {
   const list = DEMO
     ? [demoVideoJob.value, demoImageJob.value, demoUpscaleJob.value]
@@ -866,13 +948,43 @@ async function refreshRuntime() {
     ]);
     catalog.value = catalogData;
     status.value = statusData;
-    if (catalogData?.model_families?.video && !catalogData.model_families.video[video.family]) {
-      const first = Object.keys(catalogData.model_families.video)[0];
-      if (first) {
-        video.family = first;
-        onVideoFamilyChange();
-      }
+    const mockMode = Boolean(catalogData?.mock ?? statusData?.mock);
+    const installedVideo = Object.entries(catalogData?.model_families?.video || {})
+      .filter(([, value]: [string, any]) => !value?.install || mockMode || Boolean(value.install.installed))
+      .map(([key]) => key);
+    if (!installedVideo.includes(video.family)) {
+      const first = installedVideo[0] || "";
+      video.family = first;
+      if (first) onVideoFamilyChange();
+      else video.model = "";
+    } else if (!videoModelOptions.value.includes(video.model)) {
+      onVideoFamilyChange();
     }
+    const installedImages = Object.entries(catalogData?.model_families?.image || {})
+      .filter(
+        ([, value]: [string, any]) =>
+          (!value?.install || mockMode || Boolean(value.install.installed)) &&
+          (value?.modes || []).some((mode: string) => mode !== "upscale"),
+      )
+      .map(([key]) => key);
+    if (!installedImages.includes(image.family)) {
+      const first = installedImages[0] || "";
+      image.family = first;
+      if (first) onImageFamilyChange();
+      else image.model = "";
+    } else if (!imageModelOptions.value.includes(image.model)) {
+      onImageFamilyChange();
+    }
+    const upscalers = (catalogData?.models || [])
+      .filter(
+        (model: any) =>
+          model.family === "esrgan" &&
+          (mockMode || typeof model.installed !== "boolean" || model.installed) &&
+          (model.modes || []).includes("upscale"),
+      )
+      .map((model: any) => model.name);
+    if (!upscalers.includes(upscale.model)) upscale.model = upscalers[0] || "";
+    if (!upscaleModels.value.includes(upscale.model)) upscale.model = upscaleModels.value[0] || "";
   } catch (error: any) {
     toasts.error(error?.message || "Could not load QVAC runtime information");
   } finally {
@@ -1100,177 +1212,6 @@ const memoryInfo = computed(() => {
   return { label: "—", percent: 0, detail: "Memory telemetry unavailable" };
 });
 
-const familyRows = computed<any[]>(() => {
-  if (DEMO) {
-    const videoRows = demoQvacCatalog.families.map((family) => {
-      const adapter = videoFamilies.value.find((entry) => entry.key === family.id);
-      const modes = adapter?.modes?.length ? adapter.modes.join(" / ") : family.mode;
-      return {
-        key: family.id,
-        label: family.name,
-        params: family.params,
-        vram: family.vram,
-        mode: family.mode.includes("audio") ? `${modes} + audio` : modes,
-        kind: "video",
-        installed: family.installed,
-        modelSrc: defaultModelForFamily(family.id),
-      };
-    });
-    return [
-      ...videoRows,
-      { key: "flux2_klein", label: "FLUX.2-klein", params: "4B", vram: "8 GB", mode: "txt2img / img2img", kind: "image", installed: true, modelSrc: "FLUX_2_KLEIN_4B_Q4_0" },
-      { key: "esrgan", label: "Real-ESRGAN x4plus", params: "—", vram: "4 GB", mode: "upscale", kind: "upscale", installed: true, modelSrc: "REALESRGAN_X4PLUS" },
-    ];
-  }
-  const families = { ...(catalog.value?.model_families?.video || {}), ...(catalog.value?.model_families?.image || {}) };
-  return Object.entries(families).map(([key, value]: [string, any]) => {
-    const models = (catalog.value?.models || []).filter((model: any) => model.family === key);
-    const installed = models.some((model: any) => model.available || model.resolved || model.mockAvailable);
-    return {
-      key,
-      label: value.label || key,
-      params: models.length ? `${models.length} constants` : "—",
-      vram: "Depends on quant.",
-      mode: (value.modes || []).join(" / ") || value.kind || "—",
-      kind: value.kind || "video",
-      installed,
-      modelSrc: models.find((model: any) => model.kind === "diffusion")?.name || models[0]?.name || "",
-    };
-  });
-});
-
-function isRowLoaded(row: any): boolean {
-  if (!loadedModel.value) return false;
-  const key = String(row.key).toLowerCase();
-  return String(loadedModel.value.id).toLowerCase() === key || String(loadedModel.value.family).toLowerCase() === key;
-}
-
-function buildLoadBody(modelSrc: string, family: string, kind: string): Record<string, any> {
-  const body: Record<string, any> = compact({
-    modelSrc,
-    modelType: "sdcpp-generation",
-    device: modelConfig.device,
-    threads: Number(modelConfig.threads) || undefined,
-    diffusion_fa: modelConfig.diffusion_fa,
-    offload_to_cpu: modelConfig.offload_to_cpu,
-    vae_tiling: modelConfig.vae_tiling,
-    backend: modelConfig.backend,
-    max_vram: modelConfig.max_vram,
-    params_backend: modelConfig.params_backend,
-  });
-  if (kind === "video") body.mode = "video";
-  if (kind === "upscale") body.mode = "upscale";
-  if (family) body.family = family;
-  if (kind === "video" && family === video.family) {
-    Object.assign(
-      body,
-      compact({
-        t5XxlModelSrc: modelConfig.t5XxlModelSrc,
-        llmModelSrc: modelConfig.llmModelSrc,
-        vaeModelSrc: modelConfig.vaeModelSrc,
-        clipVisionModelSrc: modelConfig.clipVisionModelSrc,
-        audioVaeModelSrc: modelConfig.audioVaeModelSrc,
-        embeddingsConnectorsModelSrc: modelConfig.embeddingsConnectorsModelSrc,
-        projectionModelSrc: modelConfig.projectionModelSrc,
-        uncondModelSrc: modelConfig.uncondModelSrc,
-        highNoiseDiffusionModelSrc: modelConfig.highNoiseDiffusionModelSrc,
-        clipLModelSrc: modelConfig.clipLModelSrc,
-        clipGModelSrc: modelConfig.clipGModelSrc,
-      }),
-    );
-  }
-  if (kind === "image") {
-    const sources: Record<string, Record<string, string>> = {
-      flux2_klein: { llmModelSrc: "QWEN3_4B_Q4_K_M", vaeModelSrc: "FLUX_2_KLEIN_4B_VAE" },
-    };
-    Object.assign(body, compact(sources[family] || {}));
-  }
-  return body;
-}
-
-async function toggleStatusModel() {
-  if (loadedModel.value) {
-    await unloadLoadedModel();
-    return;
-  }
-  busyStatus.value = true;
-  try {
-    const body = buildLoadBody(modelConfig.modelSrc || video.model, video.family, "video");
-    if (DEMO) {
-      status.value = { ...status.value, loaded: { model_id: video.family, name: video.model, mode: "video" } };
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
-      toasts.success(`Loaded ${video.model}`);
-      return;
-    }
-    await api.post("/qvac/models/load", body);
-    await refreshRuntime();
-    toasts.success("QVAC model loaded");
-  } catch (error: any) {
-    toasts.error(error?.message || "Could not load the model");
-  } finally {
-    busyStatus.value = false;
-  }
-}
-
-async function unloadLoadedModel() {
-  busyStatus.value = true;
-  try {
-    if (DEMO) {
-      status.value = { ...status.value, loaded: null, loaded_models: [] };
-      await new Promise((resolve) => window.setTimeout(resolve, 300));
-      toasts.info("Demo model unloaded");
-      return;
-    }
-    await api.post("/qvac/models/unload", loadedModel.value ? { model_id: loadedModel.value.id } : {});
-    await refreshRuntime();
-    toasts.success("QVAC model unloaded");
-  } catch (error: any) {
-    toasts.error(error?.message || "Could not unload the model");
-  } finally {
-    busyStatus.value = false;
-  }
-}
-
-async function toggleRowModel(row: any) {
-  busyStatus.value = true;
-  try {
-    if (isRowLoaded(row)) {
-      if (DEMO) {
-        status.value = { ...status.value, loaded: null, loaded_models: [] };
-        toasts.info(`${row.label} unloaded`);
-        return;
-      }
-      await api.post("/qvac/models/unload", { model_id: loadedModel.value?.id || row.key });
-      await refreshRuntime();
-      toasts.success(`${row.label} unloaded`);
-      return;
-    }
-    const modelSrc = row.modelSrc || row.key;
-    if (DEMO) {
-      status.value = { ...status.value, loaded: { model_id: row.key, name: row.label, mode: row.kind, family: row.key } };
-      if (row.kind === "video") {
-        video.family = row.key;
-        video.model = modelSrc;
-        modelConfig.modelSrc = modelSrc;
-      }
-      if (row.kind === "image") {
-        image.family = row.key;
-        image.model = modelSrc;
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
-      toasts.success(`${row.label} loaded in demo mode`);
-      return;
-    }
-    await api.post("/qvac/models/load", buildLoadBody(modelSrc, row.key, row.kind));
-    await refreshRuntime();
-    toasts.success(`${row.label} loaded`);
-  } catch (error: any) {
-    toasts.error(error?.message || "Could not change the loaded model");
-  } finally {
-    busyStatus.value = false;
-  }
-}
-
 const statusRequirements = computed(() => status.value?.requirements || {});
 const hardwareNote = computed(
   () =>
@@ -1278,22 +1219,6 @@ const hardwareNote = computed(
     statusRequirements.value?.note ||
     "QVAC video generation requires at least 16 GB of VRAM or 20 GB of unified memory. Wan 2.1 T2V 1.3B runs from 8 GB; 14B/22B families need more.",
 );
-
-const constraintRows = computed(() => {
-  const constraints = catalog.value?.constraints || demoQvacCatalog.constraints || {};
-  const videoRules = constraints.video || {};
-  return [
-    { label: "Video dimensions", value: `Multiple of ${videoRules.width_height_multiple_of || constraints.width_multiple || 16}${videoRules.strict_multiple_of_32?.length ? ` · 32 for ${videoRules.strict_multiple_of_32.join(", ")}` : ""}` },
-    { label: "Wan frames", value: constraints.frame_formulas?.wan || constraints.wan_frames || "4k + 1" },
-    { label: "LTX-2 frames", value: constraints.frame_formulas?.ltx2 || constraints.ltx_frames || "8k + 1 (max 257)" },
-    { label: "MiniMax frames", value: constraints.frame_formulas?.minimax_h3 || constraints.h3_frames || "17k + 5 at 24 fps" },
-    { label: "Frame rate", value: videoRules.fps ? `${videoRules.fps.minimum}–${videoRules.fps.maximum} fps${videoRules.fps.minimax_h3 ? " · MiniMax fixed at 24" : ""}` : "1–120 fps · MiniMax fixed at 24" },
-    { label: "Steps / seed", value: `${videoRules.steps?.maximum || 200} max steps · seed ≥ -1` },
-    { label: "Image dimensions", value: `Multiple of ${constraints.image?.width_height_multiple_of || 8}` },
-    { label: "Batch / upscale", value: `Batch ≤ ${constraints.image?.batch_count?.maximum || 8} · upscale repeats ≤ ${constraints.image?.upscale_repeats?.maximum || 4}` },
-    { label: "Max frames", value: `${videoRules.max_frames || 257} frames` },
-  ];
-});
 
 const activeJobCount = computed(() => activeJobs.value.length);
 
@@ -1335,7 +1260,7 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
       v-if="!embedded"
       eyebrow="Local video generation · Tether QVAC SDK · own Docker image"
       title="QVAC video"
-      subtitle="Text-to-video and image-to-video with Wan 2.1/2.2, LTX-2 and MiniMax-H3, plus QVAC image diffusion and ESRGAN upscaling. Every SDK control, model load option and runtime constraint is exposed here and executed inside the QVAC Docker image."
+      subtitle="Text-to-video and image-to-video with Wan 2.1/2.2, LTX-2 and MiniMax-H3, plus QVAC image diffusion and ESRGAN upscaling. Model packs are installed in Settings → Models; this page picks from the installed packs and executes inside the QVAC Docker image."
     >
       <template #actions>
         <span class="chip" :class="qvacService?.online ? 'success' : ''">
@@ -1361,11 +1286,6 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
         <div class="row" style="gap: 7px">
           <span class="badge" :class="isMock ? 'warn' : 'success'">{{ isMock ? "mock mode" : "real SDK" }}</span>
           <span class="badge" :class="loadedModel ? 'success' : 'queued'">{{ loadedModel ? "model loaded" : "idle" }}</span>
-          <button class="btn btn-sm" :disabled="busyStatus" @click="toggleStatusModel">
-            <Loader2 v-if="busyStatus" :size="13" class="spin" />
-            <Zap v-else :size="13" />
-            {{ loadedModel ? "Unload model" : "Load model" }}
-          </button>
         </div>
       </div>
       <div class="panel-body">
@@ -1384,7 +1304,7 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
           <div class="status-cell">
             <span class="status-label"><Boxes :size="12" /> Loaded model</span>
             <strong class="truncate">{{ loadedModel?.name || "No model loaded" }}</strong>
-            <span class="status-sub mono">{{ loadedModel ? `${loadedModel.id} · ${loadedModel.family}` : "Load a family from the Models tab" }}</span>
+            <span class="status-sub mono">{{ loadedModel ? `${loadedModel.id} · ${loadedModel.family}` : "Loads automatically from the selected installed pack" }}</span>
           </div>
           <div class="status-cell">
             <span class="status-label"><Server :size="12" /> SDK</span>
@@ -1397,13 +1317,20 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
             <span class="status-sub">{{ status?.queue ? `${status.queue.running || 0} running · ${status.queue.queued || 0} queued` : "Global QVAC queue" }}</span>
           </div>
           <div class="status-cell">
-            <span class="status-label"><Film :size="12" /> Families</span>
+            <span class="status-label"><Film :size="12" /> Installed</span>
             <strong>{{ videoFamilies.length }} video · {{ imageFamilies.length }} image</strong>
-            <span class="status-sub">{{ familyRows.length }} catalog entries</span>
+            <span class="status-sub">{{ installedModelCount }} model assets ready</span>
           </div>
         </div>
       </div>
     </section>
+
+    <div v-if="!hasInstalledFamilies && !mockRuntime" class="alert warn" style="margin-top: 14px">
+      <strong>No QVAC models installed.</strong>
+      Install QVAC model packs in
+      <RouterLink to="/settings?tab=models">Settings → Models</RouterLink>
+      before generating video, images or upscales.
+    </div>
 
     <div class="row-between" style="margin: 16px 0 14px; flex-wrap: wrap; gap: 10px">
       <TabsBar v-model="tab" :tabs="tabs" />
@@ -1424,18 +1351,20 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
         <div class="panel-body stack">
           <div class="form-grid">
             <div class="field">
-              <label>Model family</label>
-              <select v-model="video.family" class="select" @change="onVideoFamilyChange">
+              <label>Installed model pack</label>
+              <select v-model="video.family" class="select" :disabled="!videoFamilies.length" @change="onVideoFamilyChange">
+                <option v-if="!videoFamilies.length" value="">No QVAC video packs installed</option>
                 <option v-for="family in videoFamilies" :key="family.key" :value="family.key">{{ family.label }}</option>
               </select>
               <span class="hint">{{ selectedVideoFamily?.params || "SDK constant" }} · {{ selectedVideoFamily?.vram || "VRAM varies" }} · {{ (selectedVideoFamily?.modes || []).join(" / ") }}</span>
             </div>
             <div class="field">
               <label>Diffusion model</label>
-              <select v-model="video.model" class="select" @change="syncModelSource">
+              <select v-model="video.model" class="select" :disabled="!videoModelOptions.length" @change="syncModelSource">
+                <option v-if="!videoModelOptions.length" value="">No installed model</option>
                 <option v-for="model in videoModelOptions" :key="model" :value="model">{{ model }}</option>
               </select>
-              <span class="hint">Constant, worker path or URL. The loaded model ID is used when one is already resident.</span>
+              <span class="hint">Only models installed from Settings → Models are listed here.</span>
             </div>
           </div>
 
@@ -1526,21 +1455,9 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
             </div>
           </details>
 
-          <details class="option-block config-box">
-            <summary class="option-title" style="cursor: pointer; list-style: none"><Settings2 :size="13" /> Model load configuration <span class="small muted" style="text-transform: none; letter-spacing: 0">diffusion · encoders · VAE · device</span><ChevronDown :size="14" style="margin-left: auto" /></summary>
+          <details class="option-block">
+            <summary class="option-title" style="cursor: pointer; list-style: none"><SlidersHorizontal :size="13" /> Runtime configuration <span class="small muted" style="text-transform: none; letter-spacing: 0">device · memory · tiling</span><ChevronDown :size="14" style="margin-left: auto" /></summary>
             <div class="form-grid" style="margin-top: 10px">
-              <div class="field"><label>Diffusion source</label><input v-model="modelConfig.modelSrc" class="input mono" /></div>
-              <div class="field"><label>Model type</label><select v-model="modelConfig.modelType" class="select"><option>sdcpp-generation</option><option>diffusion</option></select></div>
-              <div class="field"><label>UMT5-XXL text encoder</label><input v-model="modelConfig.t5XxlModelSrc" class="input mono" placeholder="UMT5_XXL_FP16" /></div>
-              <div class="field"><label>LLM text encoder</label><input v-model="modelConfig.llmModelSrc" class="input mono" placeholder="Gemma / Qwen3-VL" /></div>
-              <div class="field"><label>Video / image VAE</label><input v-model="modelConfig.vaeModelSrc" class="input mono" /></div>
-              <div class="field"><label>CLIP vision</label><input v-model="modelConfig.clipVisionModelSrc" class="input mono" placeholder="Wan I2V only" /></div>
-              <div class="field"><label>Audio VAE</label><input v-model="modelConfig.audioVaeModelSrc" class="input mono" placeholder="LTX-2 / MiniMax" /></div>
-              <div class="field"><label>Embedding connectors</label><input v-model="modelConfig.embeddingsConnectorsModelSrc" class="input mono" placeholder="LTX-2 layout selector" /></div>
-              <div class="field"><label>Vision projection</label><input v-model="modelConfig.projectionModelSrc" class="input mono" /></div>
-              <div class="field"><label>Unconditional model</label><input v-model="modelConfig.uncondModelSrc" class="input mono" placeholder="Ideogram 4" /></div>
-              <div class="field"><label>High-noise diffusion</label><input v-model="modelConfig.highNoiseDiffusionModelSrc" class="input mono" placeholder="Wan 2.2 A14B" /></div>
-              <div class="field"><label>CLIP-L / CLIP-G</label><div class="input-group"><input v-model="modelConfig.clipLModelSrc" class="input mono" placeholder="CLIP-L" /><input v-model="modelConfig.clipGModelSrc" class="input mono" placeholder="CLIP-G" /></div></div>
               <div class="field"><label>Device</label><select v-model="modelConfig.device" class="select"><option value="gpu">gpu</option><option value="cpu">cpu</option></select></div>
               <div class="field"><label>Threads</label><input v-model.number="modelConfig.threads" type="number" min="1" max="128" class="input" /></div>
               <div class="field"><label>Backend</label><input v-model="modelConfig.backend" class="input mono" placeholder="SDK auto" /></div>
@@ -1561,7 +1478,7 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
               <span class="chip">{{ video.steps }} steps</span>
               <span class="chip">{{ video.mode }}</span>
             </div>
-            <button class="btn btn-primary btn-lg" :disabled="busy" @click="generateVideo">
+            <button class="btn btn-primary btn-lg" :disabled="busy || !videoFamilies.length || !videoModelOptions.length" @click="generateVideo">
               <Loader2 v-if="busy" :size="15" class="spin" />
               <Wand2 v-else :size="15" />
               {{ busy ? "Submitting…" : "Generate video" }}
@@ -1622,8 +1539,8 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
         </div>
         <div class="panel-body stack">
           <div class="form-grid">
-            <div class="field"><label>Model family</label><select v-model="image.family" class="select" @change="onImageFamilyChange"><option v-for="family in imageFamilies" :key="family.key" :value="family.key">{{ family.label }}</option></select><span class="hint">{{ (selectedImageFamily?.modes || []).join(" / ") }}</span></div>
-            <div class="field"><label>Diffusion model</label><select v-model="image.model" class="select"><option v-for="model in imageModelOptions" :key="model" :value="model">{{ model }}</option></select></div>
+            <div class="field"><label>Installed model pack</label><select v-model="image.family" class="select" :disabled="!imageFamilies.length" @change="onImageFamilyChange"><option v-if="!imageFamilies.length" value="">No QVAC image packs installed</option><option v-for="family in imageFamilies" :key="family.key" :value="family.key">{{ family.label }}</option></select><span class="hint">{{ (selectedImageFamily?.modes || []).join(" / ") }}</span></div>
+            <div class="field"><label>Diffusion model</label><select v-model="image.model" class="select" :disabled="!imageModelOptions.length"><option v-if="!imageModelOptions.length" value="">No installed model</option><option v-for="model in imageModelOptions" :key="model" :value="model">{{ model }}</option></select></div>
           </div>
           <div class="field"><label>Prompt</label><textarea v-model="image.prompt" class="textarea" style="min-height: 82px" /></div>
           <div class="field"><label>Negative prompt</label><textarea v-model="image.negative_prompt" class="textarea" style="min-height: 52px" /></div>
@@ -1675,7 +1592,7 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
 
           <div class="row-between" style="flex-wrap: wrap; gap: 8px">
             <div class="row" style="gap: 7px"><span class="chip">{{ image.width }} × {{ image.height }}</span><span class="chip">{{ image.batch_count }} images</span><span class="chip">{{ image.steps }} steps</span></div>
-            <button class="btn btn-primary btn-lg" :disabled="busy" @click="generateImage"><Loader2 v-if="busy" :size="15" class="spin" /><Wand2 v-else :size="15" /> Generate images</button>
+            <button class="btn btn-primary btn-lg" :disabled="busy || !imageFamilies.length || !imageModelOptions.length" @click="generateImage"><Loader2 v-if="busy" :size="15" class="spin" /><Wand2 v-else :size="15" /> Generate images</button>
           </div>
         </div>
       </section>
@@ -1732,14 +1649,14 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
             <span class="small muted mono">{{ upscale.image_path }}</span>
           </div>
           <div class="form-grid">
-            <div class="field"><label>Upscaler</label><select v-model="upscale.model" class="select"><option v-for="model in upscaleModels" :key="model" :value="model">{{ model }}</option></select></div>
+            <div class="field"><label>Upscaler</label><select v-model="upscale.model" class="select" :disabled="!upscaleModels.length"><option v-if="!upscaleModels.length" value="">Install the Real-ESRGAN pack in Settings</option><option v-for="model in upscaleModels" :key="model" :value="model">{{ model }}</option></select></div>
             <div class="field"><label>Repeats</label><input v-model.number="upscale.repeats" type="number" min="1" max="4" class="input" /><span class="hint">Sequential 4× passes; 2 repeats = 16×.</span></div>
             <div class="field"><label>Tile size</label><input v-model.number="upscale.tile_size" type="number" min="16" max="1024" class="input" /><span class="hint">Lower tiles use less VRAM.</span></div>
             <div class="field"><label>Loaded model ID <span class="muted small">optional</span></label><input v-model="upscale.model_id" class="input mono" placeholder="Reuse an already loaded ESRGAN" /></div>
           </div>
           <div class="row-between">
             <div class="row" style="gap: 7px"><span class="chip">PNG output</span><span class="chip">{{ upscale.repeats }}× passes</span></div>
-            <button class="btn btn-primary btn-lg" :disabled="busy" @click="generateUpscale"><Loader2 v-if="busy" :size="15" class="spin" /><Maximize2 v-else :size="15" /> Upscale image</button>
+            <button class="btn btn-primary btn-lg" :disabled="busy || !upscaleModels.length" @click="generateUpscale"><Loader2 v-if="busy" :size="15" class="spin" /><Maximize2 v-else :size="15" /> Upscale image</button>
           </div>
         </div>
       </section>
@@ -1771,98 +1688,6 @@ function resultMeta(job: Job | null): Array<{ label: string; value: string }> {
           </div>
         </section>
       </aside>
-    </div>
-
-    <!-- Models tab ----------------------------------------------------- -->
-    <div v-else class="stack">
-      <div class="alert warn" v-if="isMock">
-        <strong>Mock mode is active.</strong> Generation and upscaling return deterministic preview media without loading native weights. Set <span class="mono">QVAC_MOCK=0</span>, mount the model files under <span class="mono">/data/models</span> and run on a GPU to use the real Tether SDK.
-      </div>
-      <div class="alert">
-        <strong>Hardware requirement.</strong> {{ hardwareNote }}
-      </div>
-
-      <section class="panel">
-        <div class="panel-head">
-          <div><h3>Model families</h3><p>Constants, VRAM guidance, supported modes and resident state.</p></div>
-          <div class="row" style="gap: 6px">
-            <span class="chip">{{ familyRows.length }} families</span>
-            <span class="chip success" v-if="loadedModel">{{ loadedModel.name }}</span>
-            <button class="btn btn-sm" :disabled="busy" @click="refreshRuntime"><RefreshCw :size="13" :class="{ spin: busy }" /> Refresh</button>
-          </div>
-        </div>
-        <div class="panel-body" style="padding: 8px">
-          <div style="overflow-x: auto">
-            <table class="table model-table">
-              <thead><tr><th>Family</th><th>Kind</th><th>Params</th><th>VRAM</th><th>Modes</th><th>Installed</th><th>State</th><th></th></tr></thead>
-              <tbody>
-                <tr v-for="row in familyRows" :key="row.key">
-                  <td>
-                    <div class="small strong">{{ row.label }}</div>
-                    <div class="small muted mono">{{ row.key }}</div>
-                  </td>
-                  <td><span class="badge">{{ row.kind }}</span></td>
-                  <td>{{ row.params }}</td>
-                  <td>{{ row.vram }}</td>
-                  <td class="small">{{ row.mode }}</td>
-                  <td><span class="chip" :class="row.installed ? 'success' : 'warn'">{{ row.installed ? "installed" : "not installed" }}</span></td>
-                  <td><span class="badge" :class="isRowLoaded(row) ? 'success' : 'queued'">{{ isRowLoaded(row) ? "loaded" : "idle" }}</span></td>
-                  <td>
-                    <button class="btn btn-sm" :class="{ 'btn-danger': isRowLoaded(row) }" :disabled="busyStatus" @click="toggleRowModel(row)">
-                      <Loader2 v-if="busyStatus" :size="12" class="spin" />
-                      <X v-else-if="isRowLoaded(row)" :size="12" />
-                      <Zap v-else :size="12" />
-                      {{ isRowLoaded(row) ? "Unload" : "Load" }}
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="row-between small muted" style="padding: 10px 4px 2px">
-            <span>Installed = the SDK constant or a local model file is resolvable.</span>
-            <span class="mono">models root · /data/models</span>
-          </div>
-        </div>
-      </section>
-
-      <div class="grid grid-2">
-        <section class="panel">
-          <div class="panel-head"><div><h3>Runtime constraints</h3><p>Validated by the QVAC service before every job.</p></div><span class="chip"><ListChecks :size="11" /> contracts</span></div>
-          <div class="panel-body stack" style="gap: 8px">
-            <div v-for="row in constraintRows" :key="row.label" class="meta-row"><span>{{ row.label }}</span><strong class="truncate">{{ row.value }}</strong></div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head"><div><h3>Runtime</h3><p>SDK, memory, backend and loaded state.</p></div><span class="badge" :class="isMock ? 'warn' : 'success'">{{ isMock ? "mock" : "sdk" }}</span></div>
-          <div class="panel-body stack" style="gap: 9px">
-            <div class="row-between small"><span class="muted">SDK version</span><span class="mono">{{ sdkVersion }}</span></div>
-            <div class="row-between small"><span class="muted">Device</span><span>{{ deviceLabel }}</span></div>
-            <div class="row-between small"><span class="muted">Backend</span><span class="truncate">{{ backendLabel }}</span></div>
-            <div class="row-between small"><span class="muted">Memory</span><span>{{ memoryInfo.label }}</span></div>
-            <ProgressBar :value="memoryInfo.percent" thin />
-            <div class="row-between small"><span class="muted">Loaded model</span><span class="truncate">{{ loadedModel?.name || "none" }}</span></div>
-            <div class="row-between small"><span class="muted">Active jobs</span><span>{{ activeJobCount }}</span></div>
-            <div class="row-between small"><span class="muted">FFmpeg transcode</span><span>{{ status?.ffmpeg?.available === false ? "unavailable" : "available" }}</span></div>
-            <button class="btn btn-sm" :disabled="busyStatus" @click="toggleStatusModel" style="align-self: flex-start">
-              <Zap :size="12" /> {{ loadedModel ? "Unload loaded model" : "Load active video model" }}
-            </button>
-          </div>
-        </section>
-      </div>
-
-      <section class="panel">
-        <div class="panel-head"><div><h3>Recent QVAC jobs</h3><p>Video, image and upscale workers share one queue.</p></div><span class="chip">{{ history.length }}</span></div>
-        <div class="panel-body" style="padding: 8px">
-          <div v-for="job in history" :key="job.id" class="history-row">
-            <span class="dot" :class="job.status === 'completed' ? 'online' : job.status === 'failed' ? 'offline' : job.status === 'running' ? 'busy' : ''" />
-            <span class="grow" style="min-width: 0"><span class="small strong truncate" style="display: block">{{ job.title }}</span><span class="small muted truncate" style="display: block">{{ job.message || job.action }} · {{ relativeTime(job.created_at) }}</span></span>
-            <span class="badge" :class="job.status">{{ job.status }}</span>
-          </div>
-          <div v-if="!history.length" class="small muted" style="padding: 10px">No QVAC jobs yet.</div>
-        </div>
-      </section>
     </div>
 
     <FilePicker v-model="initPicker" kind="image" title="Choose the first frame for img2vid" @selected="setVideoInit" />
