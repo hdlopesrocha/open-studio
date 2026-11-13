@@ -114,6 +114,41 @@ def test_agent_dispatches_explicit_api_catalog_tool(tmp_path, monkeypatch):
     assert actions == [{"tool": "api_catalog", "args": {"service": "music"}}]
 
 
+def test_auto_repair_reads_logs_restarts_and_retries(monkeypatch):
+    from services.chat import tools
+
+    calls: list[tuple[str, str]] = []
+
+    async def fake_item(name):
+        return {"name": name, "enabled": False, "running": False, "health": "offline", "state": "stopped"}
+
+    async def fake_request(service, method, path, body=None, **kwargs):
+        calls.append((method, path))
+        if path.endswith("/logs?lines=80"):
+            return {"ok": True, "data": {"lines": "translation\nRuntimeError: model missing\n"}}
+        if "/services/translation/enable" in path:
+            return {"ok": True, "data": {"job": {"id": "repaired"}}}
+        return {"ok": False, "error": "unexpected"}
+
+    async def fake_execute(name, args):
+        return {"ok": True, "data": {"translated_text": "Olá"}}
+
+    monkeypatch.setattr(tools, "_service_item", fake_item)
+    monkeypatch.setattr(tools, "_request", fake_request)
+    monkeypatch.setattr(tools, "execute_tool", fake_execute)
+
+    result = asyncio.run(tools.repair_tool_failure(
+        {"tool": "translate_text", "args": {"text": "Hello"}},
+        {"ok": False, "status": 503, "error": "translation unreachable"},
+    ))
+    assert result["ok"] is True
+    assert result["data"]["translated_text"] == "Olá"
+    assert result["repair"]["service"] == "translation"
+    assert result["repair"]["action"] == "enable"
+    assert result["repair"]["retried"] is True
+    assert any(path.endswith("/logs?lines=80") for _, path in calls)
+
+
 def test_agent_builds_copy_ready_opencode_prompt():
     from services.chat.tools import build_opencode_prompt
 

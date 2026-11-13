@@ -62,6 +62,14 @@ def test_chat_session_and_message_flow(tmp_path, monkeypatch):
     assert messages.status_code == 200
     assert [item["role"] for item in messages.json()["items"]] == ["user", "assistant"]
 
+    reverted = client.post(
+        f"/api/chat/sessions/{session_id}/messages/{body['user_message']['id']}/revert",
+        headers=headers,
+    )
+    assert reverted.status_code == 200
+    assert reverted.json()["deleted"] == 2
+    assert reverted.json()["messages"] == []
+
     updated = client.patch(
         f"/api/chat/sessions/{session_id}",
         headers=headers,
@@ -109,3 +117,5 @@ def test_chat_context_describes_open_studio(tmp_path, monkeypatch):
     assert "Open Studio" in payload["app"]
     assert "Settings" in payload["context"]
     assert "/music" in payload["pages"]
+    assert "/api/music/projects" in payload["context"]
+    assert "COMPLETE EXTERNAL API REFERENCE" in payload["context"]

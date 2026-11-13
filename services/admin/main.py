@@ -128,6 +128,16 @@ MODEL_ITEMS: list[dict[str, Any]] = [
         "model": "llama3.2:3b",
     },
     {
+        "id": "llm-qwen3-4b",
+        "label": "Qwen3 4B",
+        "group": "Language",
+        "description": "Command and tool-use model for the Chat agent.",
+        "size": "~2.5 GB",
+        "kind": "ollama",
+        "service": "ollama",
+        "model": "qwen3:4b",
+    },
+    {
         "id": "music-ace-step",
         "label": "ACE-Step 1.5 GGUF set",
         "group": "Music",

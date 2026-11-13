@@ -101,6 +101,7 @@ services:
       <<: *common-env
       LLM_URL: http://llm:8000
       CHAT_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      CHAT_AGENT_MODEL: ${CHAT_AGENT_MODEL:-qwen3:4b}
       CHAT_DB_PATH: /data/state/chat.db
       CHAT_CONTEXT_MESSAGES: ${CHAT_CONTEXT_MESSAGES:-40}
       CHAT_CONTEXT_CHARS: ${CHAT_CONTEXT_CHARS:-24000}

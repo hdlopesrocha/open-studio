@@ -8,10 +8,12 @@ import {
   Loader2,
   MessageSquarePlus,
   Paperclip,
+  Pencil,
   RefreshCw,
   Send,
   Sparkles,
   Trash2,
+  Undo2,
   UserRound,
   Wrench,
   X,
@@ -63,6 +65,7 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const attachments = ref<Array<{ path: string; name: string; size?: number }>>([]);
 const uploading = ref(false);
 const messageEnd = ref<HTMLElement | null>(null);
+const composer = ref<HTMLTextAreaElement | null>(null);
 
 const activeSession = computed(() => sessions.value.find((session) => session.id === activeId.value) || null);
 const filteredSessions = computed(() => {
@@ -184,6 +187,59 @@ async function deleteSession(session: ChatSession) {
     }
   } catch (err: any) {
     toasts.error(err?.message || "Could not delete the conversation.");
+  }
+}
+
+function attachmentName(path: string): string {
+  return path.split("/").filter(Boolean).pop() || path;
+}
+
+async function revertMessage(message: ChatMessage, edit = false) {
+  if (sending.value || !activeId.value) return;
+  if (!window.confirm(edit ? "Revert to this message and edit it? Later messages will be removed." : "Revert the conversation to this point? Later messages will be removed.")) return;
+  try {
+    if (DEMO || message.id.startsWith("local-")) {
+      const index = messages.value.findIndex((item) => item.id === message.id);
+      if (index >= 0) messages.value = messages.value.slice(0, index);
+      if (edit) {
+        draft.value = message.content;
+        attachments.value = (message.metadata?.attachments || []).map((path: string) => ({ path, name: attachmentName(path) }));
+      }
+      return;
+    }
+    const data = await api.post<{ messages: ChatMessage[]; session: ChatSession }>(
+      `/chat/sessions/${activeId.value}/messages/${message.id}/revert`,
+      {},
+    );
+    messages.value = data.messages || [];
+    const session = sessions.value.find((item) => item.id === activeId.value);
+    if (session && data.session) Object.assign(session, data.session);
+    if (edit) {
+      draft.value = message.content;
+      attachments.value = (message.metadata?.attachments || []).map((path: string) => ({ path, name: attachmentName(path) }));
+      await nextTick();
+      composer.value?.focus();
+    } else {
+      toasts.success("Conversation reverted");
+    }
+    await scrollToBottom();
+  } catch (err: any) {
+    toasts.error(err?.message || "Could not revert the conversation.");
+  }
+}
+
+async function deleteMessage(message: ChatMessage) {
+  if (sending.value || !activeId.value) return;
+  if (!window.confirm("Delete this message?")) return;
+  try {
+    if (!DEMO && !message.id.startsWith("local-")) {
+      await api.delete(`/chat/sessions/${activeId.value}/messages/${message.id}`);
+    }
+    messages.value = messages.value.filter((item) => item.id !== message.id);
+    const session = sessions.value.find((item) => item.id === activeId.value);
+    if (session) session.message_count = messages.value.length;
+  } catch (err: any) {
+    toasts.error(err?.message || "Could not delete the message.");
   }
 }
 
@@ -371,6 +427,15 @@ onMounted(async () => {
               </div>
               <div class="chat-message-actions">
                 <span>{{ relativeTime(message.created_at) }}</span>
+                <button v-if="message.role === 'user'" class="icon-btn" title="Edit and resubmit" @click="revertMessage(message, true)">
+                  <Pencil :size="12" />
+                </button>
+                <button v-if="message.role === 'user'" class="icon-btn" title="Revert to this message" @click="revertMessage(message, false)">
+                  <Undo2 :size="12" />
+                </button>
+                <button class="icon-btn" title="Delete message" @click="deleteMessage(message)">
+                  <Trash2 :size="12" />
+                </button>
                 <button class="icon-btn" :title="copiedId === message.id ? 'Copied' : 'Copy message'" @click="copyMessage(message)">
                   <Check v-if="copiedId === message.id" :size="12" /><Copy v-else :size="12" />
                 </button>
@@ -391,7 +456,7 @@ onMounted(async () => {
           </div>
           <details class="chat-context">
             <summary>What the assistant knows</summary>
-            <p>It knows the Audio (songwriting, DJ and SRT), Video/QVAC, Documents (PDF, translation and summary), Voice, Images, FFmpeg, yt-dlp, Files, Jobs and Settings workspaces, plus which models and services must be enabled. It can guide you, write prompts and produce REST requests, but it cannot silently run another workspace.</p>
+            <p>It knows the Audio (songwriting, DJ and SRT), Video/QVAC, Documents (PDF, translation and summary), Voice, Images, FFmpeg, yt-dlp, Files, Jobs and Settings workspaces, the complete external API, and which models and services must be enabled. It can execute whitelisted tools, inspect logs, repair services, read attachments, chain actions and generate OpenCode prompts for code-level fixes. Tool commands run on Qwen3 4B.</p>
           </details>
         </div>
 
@@ -403,7 +468,7 @@ onMounted(async () => {
             </span>
           </div>
           <input ref="fileInput" type="file" multiple hidden @change="onAttachmentChange" />
-          <textarea v-model="draft" class="textarea" rows="3" :disabled="!llmOnline" placeholder="Message your local model…  Shift+Enter for a new line" @keydown="onComposerKeydown" />
+          <textarea ref="composer" v-model="draft" class="textarea" rows="3" :disabled="!llmOnline" placeholder="Message your local model…  Shift+Enter for a new line" @keydown="onComposerKeydown" />
           <div class="row-between" style="margin-top: 8px">
             <span class="row small muted" style="gap: 7px"><Sparkles :size="11" /> {{ model }} · local session context
               <button class="icon-btn" title="Attach a file" :disabled="uploading || attachments.length >= 8" @click="pickAttachment"><Loader2 v-if="uploading" :size="13" class="spin" /><Paperclip v-else :size="13" /></button>
@@ -444,6 +509,8 @@ onMounted(async () => {
 .chat-message.user .chat-bubble { border-top-right-radius: 4px; }
 .chat-bubble.typing { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
 .chat-message-actions { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.chat-message-actions .icon-btn { opacity: 0; transition: opacity 120ms ease; }
+.chat-message:hover .chat-message-actions .icon-btn, .chat-message-actions .icon-btn:focus-visible { opacity: 1; }
 .chat-message.user .chat-message-actions { justify-content: flex-end; }
 .chat-presets { flex: 0 0 auto; padding: 0 20px 9px; }
 .chat-composer { flex: 0 0 auto; padding: 10px 20px 18px; border-top: 1px solid var(--line); }

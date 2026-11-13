@@ -12,6 +12,8 @@ import httpx
 
 from openstudio_common import FILES_ROOT, INTERNAL_TOKEN, JOBHUB_URL, service_url
 
+from .api_reference import API_REFERENCE
+
 log = logging.getLogger("chat.tools")
 
 SERVICE_URLS: dict[str, str] = {
@@ -211,9 +213,26 @@ STATIC_ENDPOINTS: dict[str, list[dict[str, str]]] = {
 }
 
 
+def _reference_catalog(service: str) -> list[dict[str, str]]:
+    aliases = {"images": "imagegen", "imagegen": "imagegen", "translate": "translation", "summarize": "summary", "subtitles": "srt", "documents": "docs"}
+    target = aliases.get(service, service)
+    current = ""
+    items: list[dict[str, str]] = []
+    for line in API_REFERENCE.splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1]
+            continue
+        if current != target or not line.strip():
+            continue
+        method, _, path = line.partition(" ")
+        if method in {"GET", "POST", "PUT", "PATCH", "DELETE"} and path.startswith("/api/"):
+            items.append({"method": method, "path": path, "summary": "API reference"})
+    return items
+
+
 def _static_catalog(service: str) -> list[dict[str, str]]:
     aliases = {"imagegen": "images", "translate": "translation", "summarize": "summary", "subtitles": "srt", "documents": "docs"}
-    return STATIC_ENDPOINTS.get(aliases.get(service, service), [])
+    return _reference_catalog(service) or STATIC_ENDPOINTS.get(aliases.get(service, service), [])
 
 
 def _headers() -> dict[str, str]:
@@ -371,6 +390,24 @@ async def _music_generate(args: dict[str, Any]) -> dict[str, Any]:
     job = await _request("music", "POST", f"/api/music/songs/{song_id}/generate", generate_body)
     return {"ok": bool(job.get("ok")), "data": {"project": project_data, "song": song_data, "job": job.get("data")}, "status": job.get("status")}
 
+TOOL_SERVICE_MAP = {
+    "translate_text": "translation",
+    "summarize_text": "summary",
+    "generate_image": "imagegen",
+    "transcribe_audio": "srt",
+    "synthesize_speech": "voice",
+    "music_generate": "music",
+}
+SERVICE_ALIAS_MAP = {
+    "images": "imagegen", "imagegen": "imagegen", "translate": "translation",
+    "translation": "translation", "summarize": "summary", "summary": "summary",
+    "subtitles": "srt", "srt": "srt", "documents": "docs", "docs": "docs",
+    "voice": "voice", "music": "music", "music-engine": "music-engine",
+    "video": "video", "qvac": "qvac", "llm": "llm", "ollama": "ollama",
+    "pdf": "pdf", "ffmpeg": "ffmpeg", "ytdlp": "ytdlp", "files": "files",
+    "jobs": "jobhub", "jobhub": "jobhub", "admin": "admin",
+}
+
 
 def _compact_services(payload: Any) -> dict[str, Any]:
     data = payload if isinstance(payload, dict) else {}
@@ -435,6 +472,67 @@ def _compact_jobs(payload: Any) -> dict[str, Any]:
             "artifacts": item.get("artifacts") or [],
         })
     return {"items": items, "total": data.get("total", len(items)), "limit": data.get("limit"), "offset": data.get("offset")}
+
+
+def _service_for_action(action: dict[str, Any]) -> str | None:
+    tool = str(action.get("tool") or "")
+    args = action.get("args") if isinstance(action.get("args"), dict) else {}
+    raw = str(args.get("service") or "") if tool == "api_request" else TOOL_SERVICE_MAP.get(tool, "")
+    return SERVICE_ALIAS_MAP.get(raw.strip().lower(), raw.strip().lower() or None)
+
+
+def _looks_repairable(result: dict[str, Any]) -> bool:
+    if result.get("ok"):
+        return False
+    status = result.get("status")
+    if status in {500, 502, 503, 504}:
+        return True
+    text = f"{result.get('error') or ''} {result.get('data') or ''}".lower()
+    return any(token in text for token in ("unreachable", "connection refused", "timed out", "timeout", "offline", "not available", "service unavailable", "bad gateway", "no healthy upstream"))
+
+
+async def _service_item(service: str) -> dict[str, Any] | None:
+    result = await _request("admin", "GET", "/api/admin/services")
+    if not result.get("ok"):
+        return None
+    for item in (result.get("data") or {}).get("items") or []:
+        if str(item.get("name") or "") == service:
+            return item
+    return None
+
+
+async def repair_tool_failure(action: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    if not _looks_repairable(result):
+        return result
+    service = _service_for_action(action)
+    if not service or service in {"admin", "jobhub", "files", "llm", "ollama"}:
+        return result
+    before = await _service_item(service)
+    if not before:
+        return result
+    logs_result = await _request("admin", "GET", f"/api/admin/services/{service}/logs?lines=80")
+    logs = str((logs_result.get("data") or {}).get("lines") or "").splitlines()[-60:] if logs_result.get("ok") else []
+    action_name = "enable" if not before.get("enabled") else "restart"
+    repaired = await _request("admin", "POST", f"/api/admin/services/{service}/{action_name}")
+    await asyncio.sleep(2.0)
+    after = await _service_item(service)
+    retry = await execute_tool(str(action.get("tool")), action.get("args") if isinstance(action.get("args"), dict) else {})
+    repair_info = {
+        "service": service,
+        "action": action_name,
+        "service_action_ok": bool(repaired.get("ok")),
+        "before": {key: before.get(key) for key in ("enabled", "running", "health", "state")},
+        "after": {key: (after or {}).get(key) for key in ("enabled", "running", "health", "state")},
+        "logs": logs[-30:],
+        "retried": True,
+    }
+    if not retry.get("ok"):
+        repair_info["opencode_prompt"] = build_opencode_prompt(
+            f"{service} failed while executing {action.get('tool')}",
+            details=json.dumps({"service": repair_info, "error": retry, "logs": logs[-40:]}, ensure_ascii=False)[:12000],
+        )
+    retry["repair"] = repair_info
+    return retry
 
 
 async def _diagnose() -> dict[str, Any]:

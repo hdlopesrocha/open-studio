@@ -9,6 +9,7 @@ COMPOSE_VULKAN := docker compose -f docker-compose.yml -f docker-compose.vulkan.
 PY := python3
 WHISPER_MODEL ?= large-v3
 OLLAMA_MODEL ?= llama3.2:3b
+CHAT_AGENT_MODEL ?= qwen3:4b
 OPENSTUDIO_PORT ?= 8090
 
 .PHONY: help init build rebuild up up-cpu up-gpu up-vulkan up-all down fix-perms stop restart ps logs wait health status config shell \
@@ -136,10 +137,11 @@ models: models-llm models-music models-whisper models-text models-piper ## Downl
 
 models-all: models ## Alias
 
-models-llm: ## Pull the Ollama model used for lyrics + planning
+models-llm: ## Pull the Ollama models used for chat, lyrics and tool commands
 	$(COMPOSE) up -d ollama
 	@sleep 3
 	$(COMPOSE) exec ollama ollama pull $${OLLAMA_MODEL:-$(OLLAMA_MODEL)} || $(COMPOSE) exec ollama ollama pull $(OLLAMA_MODEL)
+	$(COMPOSE) exec ollama ollama pull $${CHAT_AGENT_MODEL:-$(CHAT_AGENT_MODEL)} || $(COMPOSE) exec ollama ollama pull $(CHAT_AGENT_MODEL)
 
 models-music: ## Download the default ACE-Step GGUF set (~4-8 GB)
 	$(COMPOSE) --profile services run --rm --user root --entrypoint /opt/acestep/download-models.sh music-engine

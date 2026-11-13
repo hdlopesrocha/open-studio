@@ -20,13 +20,14 @@ from pydantic import BaseModel, Field
 from openstudio_common import INTERNAL_TOKEN, STATE_ROOT, create_service_app, env, service_url, utc_now
 
 from .context import APP_CONTEXT
-from .tools import TOOL_GUIDE, TOOL_NAMES, attachment_context, execute_tool
+from .tools import TOOL_GUIDE, TOOL_NAMES, attachment_context, execute_tool, repair_tool_failure
 
 log = logging.getLogger("chat")
 
 VERSION = "1.0.0"
 LLM_URL = env("LLM_URL", service_url("llm")).rstrip("/")
 DEFAULT_MODEL = env("CHAT_MODEL", env("LLM_MODEL", "llama3.2:3b"))
+AGENT_MODEL = env("CHAT_AGENT_MODEL", "qwen3:4b")
 DEFAULT_SYSTEM_PROMPT = env(
     "CHAT_SYSTEM_PROMPT",
     "You are Open Studio's local AI assistant. Be clear, practical and concise. "
@@ -54,13 +55,13 @@ def _now() -> str:
 
 class SessionCreate(BaseModel):
     title: str = Field(default="New chat", max_length=160)
-    system_prompt: str = Field(default=DEFAULT_SYSTEM_PROMPT, max_length=16000)
+    system_prompt: str = Field(default=DEFAULT_SYSTEM_PROMPT, max_length=40000)
     model: str = Field(default=DEFAULT_MODEL, max_length=200)
 
 
 class SessionUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=160)
-    system_prompt: str | None = Field(default=None, max_length=16000)
+    system_prompt: str | None = Field(default=None, max_length=40000)
     model: str | None = Field(default=None, max_length=200)
 
 
@@ -238,6 +239,20 @@ class ChatStore:
             self._conn.commit()
             return cursor.rowcount > 0
 
+    def revert_from(self, session_id: str, message_id: str) -> int | None:
+        """Delete a message and every message after it, preserving DB order."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT rowid FROM messages WHERE id=? AND session_id=?", (message_id, session_id)
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = self._conn.execute(
+                "DELETE FROM messages WHERE session_id=? AND rowid>=?", (session_id, row["rowid"])
+            )
+            self._conn.commit()
+            return cursor.rowcount
+
 
 STORE = ChatStore()
 
@@ -295,6 +310,15 @@ async def _request_llm(messages: list[dict[str, Any]], model: str, *, temperatur
     return {"content": content, "model": data.get("model") or model, "usage": data.get("usage") or {}}
 
 
+async def _agent_llm(messages: list[dict[str, Any]], fallback_model: str, *, temperature: float = 0.1, max_tokens: int = 900, json_mode: bool = False) -> dict[str, Any]:
+    try:
+        return await _request_llm(messages, AGENT_MODEL, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode)
+    except HTTPException as exc:
+        if exc.status_code == 503 and ("not installed" in str(exc.detail).lower() or "not found" in str(exc.detail).lower()):
+            return await _request_llm(messages, fallback_model, temperature=temperature, max_tokens=max_tokens, json_mode=json_mode)
+        raise
+
+
 async def _call_llm(session: dict[str, Any], messages: list[dict[str, Any]], payload: MessageCreate) -> dict[str, Any]:
     model = (payload.model or session.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
     return await _request_llm(messages, model, temperature=payload.temperature, max_tokens=payload.max_tokens)
@@ -302,6 +326,8 @@ async def _call_llm(session: dict[str, Any], messages: list[dict[str, Any]], pay
 def _context(session: dict[str, Any], history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     system_prompt = str(session.get("system_prompt") or "").strip()
+    if "COMPLETE EXTERNAL API REFERENCE" not in system_prompt:
+        system_prompt = (system_prompt + "\n\n" + APP_CONTEXT).strip()
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     selected = history[-CONTEXT_MESSAGES:]
@@ -596,6 +622,14 @@ def _tool_summary(results: list[dict[str, Any]]) -> str:
             continue
         data = item.get("data")
         args = item.get("args") if isinstance(item.get("args"), dict) else {}
+        repair = item.get("repair") if isinstance(item.get("repair"), dict) else {}
+        if repair:
+            lines.append(f"Auto-repair: {repair.get('service')} {repair.get('action')}; retry {'succeeded' if item.get('ok') else 'failed'}.")
+            repair_logs = repair.get("logs") or []
+            if repair_logs:
+                lines.append("Recent log: " + str(repair_logs[-1])[:500])
+            if repair.get("opencode_prompt"):
+                lines.append("OpenCode prompt:\n" + str(repair["opencode_prompt"])[:3000])
         if tool == "list_services" and isinstance(data, dict):
             items = data.get("items") or []
             online = [str(entry.get("name")) for entry in items if entry.get("running") or entry.get("online")]
@@ -742,9 +776,15 @@ def _grounded_answer(text: str | None, results: list[dict[str, Any]]) -> str:
 
 async def _execute_agent_tool(action: dict[str, Any]) -> dict[str, Any]:
     try:
-        return await asyncio.wait_for(execute_tool(action["tool"], action.get("args") or {}), timeout=AGENT_TOOL_TIMEOUT_SECONDS)
+        result = await asyncio.wait_for(execute_tool(action["tool"], action.get("args") or {}), timeout=AGENT_TOOL_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
-        return {"ok": False, "error": f"{action['tool']} timed out after {int(AGENT_TOOL_TIMEOUT_SECONDS)}s"}
+        result = {"ok": False, "error": f"{action['tool']} timed out after {int(AGENT_TOOL_TIMEOUT_SECONDS)}s"}
+    if not result.get("ok"):
+        try:
+            result = await repair_tool_failure(action, result)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Automatic repair for %s failed: %s", action.get("tool"), exc)
+    return result
 
 
 async def _final_answer(messages: list[dict[str, Any]], model: str, results: list[dict[str, Any]], message: str = "") -> str:
@@ -752,7 +792,7 @@ async def _final_answer(messages: list[dict[str, Any]], model: str, results: lis
         return ""
     summary = _tool_summary(results)
     try:
-        raw = (await asyncio.wait_for(_request_llm(
+        raw = (await asyncio.wait_for(_agent_llm(
             [
                 {
                     "role": "system",
@@ -817,7 +857,8 @@ async def _run_agent(session: dict[str, Any], message: str, attachments: list[st
         "When the task is complete, or after you have enough information: "
         "{\"thought\":\"brief reasoning\",\"actions\":[],\"final\":\"answer for the user\"}. "
         "Use the results of each tool call to decide what to do next. Do not return a final answer while more tool calls are needed. "
-        "Do not make up tool results. For a read-only status/check task, call the relevant tool and then answer from its data; do not move to an unrelated workspace. "
+        "Do not make up tool results. If a tool fails, read the provided logs/service repair result, retry or repair the affected service, and use opencode_prompt if the failure needs code changes. "
+        "For a read-only status/check task, call the relevant tool and then answer from its data; do not move to an unrelated workspace. "
         "Only use navigate when the user explicitly asks to open or go to a page. Only use write_file when the user explicitly asks to save or write a file."
     )
     history = STORE.list_messages(str(session.get("id") or ""))
@@ -825,7 +866,7 @@ async def _run_agent(session: dict[str, Any], message: str, attachments: list[st
     messages = _context(session, prior)
     if messages and messages[0].get("role") == "system":
         system_content = str(messages[0].get("content") or "")
-        if "OPEN STUDIO OVERVIEW" not in system_content:
+        if "COMPLETE EXTERNAL API REFERENCE" not in system_content:
             system_content += "\n\n" + APP_CONTEXT
         messages[0]["content"] = system_content + "\n\n" + TOOL_GUIDE + "\n\n" + protocol
     else:
@@ -841,7 +882,7 @@ async def _run_agent(session: dict[str, Any], message: str, attachments: list[st
             break
         remaining = max(5.0, min(AGENT_LLM_TIMEOUT_SECONDS, deadline - time.monotonic()))
         try:
-            raw = (await asyncio.wait_for(_request_llm(messages, model, temperature=0.1, max_tokens=900, json_mode=True), timeout=remaining))["content"]
+            raw = (await asyncio.wait_for(_agent_llm(messages, model, temperature=0.1, max_tokens=900, json_mode=True), timeout=remaining))["content"]
         except (HTTPException, asyncio.TimeoutError):
             if results:
                 return results, _tool_summary(results)
@@ -900,7 +941,9 @@ async def chat_health() -> dict[str, Any]:
         "status": "ok" if models.get("reachable") else "degraded",
         "service": "chat",
         "model": DEFAULT_MODEL,
+        "agent_model": AGENT_MODEL,
         "model_installed": bool(models.get("items")),
+        "agent_model_installed": any(str(item.get("id")) == AGENT_MODEL for item in models.get("items", []) if isinstance(item, dict)),
         "llm_reachable": bool(models.get("reachable")),
         "detail": None if models.get("reachable") else models.get("error") or "LLM bridge is offline.",
     }
@@ -972,7 +1015,7 @@ async def send_message(session_id: str, payload: MessageCreate) -> dict[str, Any
     if agent_text is not None:
         assistant_content = agent_text
         usage: dict[str, Any] = {}
-        assistant_model = model
+        assistant_model = AGENT_MODEL if AGENT_MODEL else model
     else:
         history = STORE.list_messages(session_id)
         reply = await _call_llm(session, _context(session, history), payload)
@@ -1000,6 +1043,21 @@ async def delete_message(session_id: str, message_id: str) -> dict[str, Any]:
     if not STORE.delete_message(session_id, message_id):
         raise HTTPException(status_code=404, detail="Message not found")
     return {"ok": True, "id": message_id}
+
+
+@router.post("/sessions/{session_id}/messages/{message_id}/revert")
+async def revert_from_message(session_id: str, message_id: str) -> dict[str, Any]:
+    if STORE.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    deleted = STORE.revert_from(session_id, message_id)
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "messages": STORE.list_messages(session_id),
+        "session": STORE.get_session(session_id),
+    }
 
 
 app = create_service_app(

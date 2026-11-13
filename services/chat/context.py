@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .api_reference import API_REFERENCE
+
 APP_CONTEXT = """
 You are the assistant inside Open Studio, a private, local-first AI production
 studio. You are not a generic chatbot: your answers should help the user operate
@@ -94,3 +96,7 @@ HOW TO ANSWER
   services, ask for explicit confirmation first.
 - Be privacy-aware: this is a local single-user studio, not a cloud service.
 """.strip()
+
+APP_CONTEXT = (APP_CONTEXT + "\n\nCOMPLETE EXTERNAL API REFERENCE\n"
+               "These are the exact external endpoints. Use api_describe for request schemas, "
+               "and api_request to execute them. Internal routes are excluded.\n" + API_REFERENCE).strip()
