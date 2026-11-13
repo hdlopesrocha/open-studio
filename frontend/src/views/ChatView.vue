@@ -18,13 +18,15 @@ import {
   Wrench,
   X,
 } from "lucide-vue-next";
-import { api, relativeTime, uploadFile } from "@/lib/api";
+import { api, relativeTime } from "@/lib/api";
 import { DEMO } from "@/lib/types";
+import type { FileInfo } from "@/lib/types";
 import { useSystemStore } from "@/stores/system";
 import { useToastStore } from "@/stores/toasts";
 import PageHeader from "@/components/PageHeader.vue";
 import EmptyState from "@/components/EmptyState.vue";
 import ServiceNotice from "@/components/ServiceNotice.vue";
+import FilePicker from "@/components/FilePicker.vue";
 
 interface ChatSession {
   id: string;
@@ -61,13 +63,13 @@ const loading = ref(false);
 const sending = ref(false);
 const error = ref("");
 const copiedId = ref("");
-const fileInput = ref<HTMLInputElement | null>(null);
 const attachments = ref<Array<{ path: string; name: string; size?: number }>>([]);
-const uploading = ref(false);
+const attachmentPickerOpen = ref(false);
 const messageEnd = ref<HTMLElement | null>(null);
 const composer = ref<HTMLTextAreaElement | null>(null);
 
 const activeSession = computed(() => sessions.value.find((session) => session.id === activeId.value) || null);
+const attachmentStartPath = computed(() => activeId.value ? `chat/uploads/${activeId.value}` : "chat/uploads");
 const filteredSessions = computed(() => {
   const needle = query.value.trim().toLowerCase();
   if (!needle) return sessions.value;
@@ -255,28 +257,15 @@ function askAgentToFixAction(action: any) {
   askAgentToFix(`The ${action?.tool || "tool"} action failed: ${detail}`);
 }
 
-function pickAttachment() {
-  fileInput.value?.click();
-}
-
-async function onAttachmentChange(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const files = Array.from(input.files || []);
-  input.value = "";
-  if (!files.length) return;
-  uploading.value = true;
-  try {
-    for (const file of files.slice(0, 8 - attachments.value.length)) {
-      const folder = activeId.value ? `chat/uploads/${activeId.value}` : "chat/uploads";
-      const result = await uploadFile(folder, file);
-      const path = result.file?.path || `${folder}/${file.name}`;
-      attachments.value.push({ path, name: result.file?.name || file.name, size: result.file?.size || file.size });
-    }
-  } catch (err: any) {
-    toasts.error(err?.message || "Could not upload the attachment.");
-  } finally {
-    uploading.value = false;
+function onAttachmentSelected(path: string, file: FileInfo) {
+  if (attachments.value.length >= 8) {
+    toasts.info("A message can include at most 8 attachments.");
+    return;
   }
+  if (!attachments.value.some((item) => item.path === path)) {
+    attachments.value.push({ path, name: file.name, size: file.size });
+  }
+  attachmentPickerOpen.value = false;
 }
 
 function removeAttachment(index: number) {
@@ -481,17 +470,18 @@ onMounted(async () => {
               <button class="icon-btn" style="padding: 0; margin-left: 3px" title="Remove attachment" @click="removeAttachment(index)"><X :size="10" /></button>
             </span>
           </div>
-          <input ref="fileInput" type="file" multiple hidden @change="onAttachmentChange" />
+
           <textarea ref="composer" v-model="draft" class="textarea" rows="3" :disabled="!llmOnline" placeholder="Message your local model…  Shift+Enter for a new line" @keydown="onComposerKeydown" />
           <div class="row-between" style="margin-top: 8px">
             <span class="row small muted" style="gap: 7px"><Sparkles :size="11" /> {{ model }} · local session context
-              <button class="icon-btn" title="Attach a file" :disabled="uploading || attachments.length >= 8" @click="pickAttachment"><Loader2 v-if="uploading" :size="13" class="spin" /><Paperclip v-else :size="13" /></button>
+              <button class="icon-btn" title="Attach or choose a shared file" :disabled="attachments.length >= 8" @click="attachmentPickerOpen = true"><Paperclip :size="13" /></button>
             </span>
             <button class="btn btn-primary" :disabled="sending || !draft.trim() || !llmOnline" @click="send"><Loader2 v-if="sending" :size="14" class="spin" /><Send v-else :size="14" /> Send</button>
           </div>
         </div>
       </section>
     </div>
+    <FilePicker v-model="attachmentPickerOpen" :start-path="attachmentStartPath" title="Attach files" kind="all" @selected="onAttachmentSelected" />
   </div>
 </template>
 
