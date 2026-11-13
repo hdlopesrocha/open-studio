@@ -45,7 +45,7 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 
 | Area | Functionality |
 |---|---|
-| **Chat** | Persistent local ChatGPT-style sessions with a favorite model used by default for every new conversation, message edit/revert/delete, shared-file attachments through the same file picker as the rest of the app, an iterative Qwen3 4B Instruct action agent and first-class voice training from shared reference audio. It knows the complete external REST API as well as every studio, service, model, file path and job workflow; uploads files, discovers endpoints, chains tools, controls services/models/jobs, reads logs, self-repairs failed services, retries work, suggests routes and emits copy-ready OpenCode prompts. It cannot use internal control endpoints and refuses empty file writes. |
+| **Chat** | Persistent local ChatGPT-style sessions with a favorite model used by default for every new conversation, message edit/revert/delete, shared-file attachments through the same file picker as the rest of the app, spoken replies from any assistant message with an optional auto-speak toggle, an iterative Qwen3 4B Instruct action agent and first-class voice training from shared reference audio. Chat uses OmniVoice on accelerated hardware and falls back to an installed Piper voice on CPU or while the model is loading. It knows the complete external REST API as well as every studio, service, model, file path and job workflow; uploads files, discovers endpoints, chains tools, controls services/models/jobs, reads logs, self-repairs failed services, retries work, suggests routes and emits copy-ready OpenCode prompts. It cannot use internal control endpoints and refuses empty file writes. |
 | **Audio** | ACE-Step 1.5 songs, structured lyrics, LLM drafts, takes and exports, plus DJ Library/Create/Mix tabs for analysis, style models, AI arrangements, adjustable segment count/target-duration mix scenes and effects, plus an integrated SRT tab for Whisper transcription/lyric alignment. Section-aware shared player, lyric section seeking, complete-lyrics copy, SRT export and bass/drums/snare/voice/air-reactive page colours. |
 | **Video** | Audio + SRT → analysed timeline → scene plan → procedural / Diffusers / ComfyUI / QVAC artwork → FFmpeg or OpenCV animation → styled subtitles → final MP4/MKV. QVAC video/image/upscale/model tabs are embedded in Video. Scene editor, timeline, image variants, depth maps, audio-reactive effects, pause/cancel, export panel. |
 | **Voice** | OmniVoice zero-shot cloning, voice design by attributes, auto voice, Whisper transcription, 646 languages, Piper built-in voices, batch synthesis, retraining, export/import, previews, history. All TTS runs in Docker. |
@@ -248,6 +248,13 @@ Ordinary prompts use a compact app core so local models stay responsive. Tool/co
 compact tool protocol, while the selected session model remains available for
 ordinary conversation. Set `OLLAMA_CONTEXT_LENGTH` (default 32768) for the full
 context window.
+
+Every assistant reply has a **Voice reply** action. It queues a normal Voice job,
+persists the generated audio path on the Chat message and plays the result in
+the browser. The composer’s **Voice replies** toggle does the same automatically
+for new answers. Chat selects an engine from the live Voice catalog: OmniVoice
+when it is ready on CUDA/MPS, otherwise an installed Piper voice so CPU replies
+stay fast.
 
 The agent can attach uploaded shared files, call whitelisted REST APIs,
 enable/restart services, install/re-check models, inspect/retry jobs, read
@@ -1011,7 +1018,7 @@ curl -OJ -H 'Authorization: Bearer osk_...' \
 | `/api/jobs/*` | Job hub | `POST /api/jobs` |
 | `/api/files/*` | Shared files | `GET /api/files/list` |
 | `/api/admin/*` | Service manager | `GET /api/admin/services`, `POST /api/admin/services/{name}/enable` |
-| `/api/chat/*` | Chat | `POST /api/chat/sessions`, `POST /api/chat/sessions/{id}/messages` |
+| `/api/chat/*` | Chat | `POST /api/chat/sessions`, `POST /api/chat/sessions/{id}/messages`, `POST /api/chat/sessions/{id}/messages/{message_id}/speech` |
 | `/api/music/*` | Music | `POST /api/music/songs/{id}/generate`, `GET /api/music/songs/{id}/lyrics.srt` |
 | `/api/dj/*` | DJ Studio | `POST /api/dj/tracks`, `POST /api/dj/mixes/{id}/scene`, `POST /api/dj/mixes/{id}/render` |
 | `/api/video/*` | Video | `POST /api/video/projects/{id}/run` |
