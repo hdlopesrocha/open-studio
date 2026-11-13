@@ -65,6 +65,7 @@ def test_model_catalog_covers_every_model_family():
     assert {group["group"] for group in groups} >= {"Language", "Music", "Voice", "Subtitles", "Text", "Images", "QVAC"}
     assert sum(len(group["items"]) for group in groups) == len(items)
     assert {"translation-opus", "translation-nllb", "summary-en", "summary-pt", "whisper-base", "whisper-medium"} <= set(ids)
+    assert "llm-qwen3-4b-instruct" in set(ids)
     assert {
         "music-ace-step-base",
         "music-ace-step-sft",

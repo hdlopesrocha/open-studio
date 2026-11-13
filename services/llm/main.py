@@ -21,7 +21,7 @@ OLLAMA_URL = env("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
 OLLAMA_CONTEXT_LENGTH = env("OLLAMA_CONTEXT_LENGTH", "32768")
 API_KEY = env("LLM_API_KEY", "")
 DEFAULT_MODEL = env("LLM_MODEL", "llama3.2:3b")
-TIMEOUT = float(env("LLM_TIMEOUT_SECONDS", "300"))
+TIMEOUT = float(env("LLM_TIMEOUT_SECONDS", "900"))
 NATIVE_OLLAMA = env_bool("LLM_OLLAMA_NATIVE", True)
 
 

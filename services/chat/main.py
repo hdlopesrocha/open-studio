@@ -27,7 +27,7 @@ log = logging.getLogger("chat")
 VERSION = "1.0.0"
 LLM_URL = env("LLM_URL", service_url("llm")).rstrip("/")
 DEFAULT_MODEL = env("CHAT_MODEL", env("LLM_MODEL", "llama3.2:3b"))
-AGENT_MODEL = env("CHAT_AGENT_MODEL", "qwen3:4b")
+AGENT_MODEL = env("CHAT_AGENT_MODEL", "qwen3:4b-instruct")
 DEFAULT_SYSTEM_PROMPT = env(
     "CHAT_SYSTEM_PROMPT",
     "You are Open Studio's local AI assistant. Be clear, practical and concise. "
@@ -37,8 +37,8 @@ CONTEXT_MESSAGES = int(env("CHAT_CONTEXT_MESSAGES", "40"))
 CONTEXT_CHARS = int(env("CHAT_CONTEXT_CHARS", "24000"))
 AGENT_STEPS = int(env("CHAT_AGENT_STEPS", "4"))
 AGENT_TOOL_CALLS = int(env("CHAT_AGENT_TOOL_CALLS", "8"))
-AGENT_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TIMEOUT_SECONDS", "240"))
-AGENT_LLM_TIMEOUT_SECONDS = float(env("CHAT_AGENT_LLM_TIMEOUT_SECONDS", "120"))
+AGENT_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TIMEOUT_SECONDS", "300"))
+AGENT_LLM_TIMEOUT_SECONDS = float(env("CHAT_AGENT_LLM_TIMEOUT_SECONDS", "240"))
 AGENT_TOOL_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TOOL_TIMEOUT_SECONDS", "90"))
 CHAT_RECORD_JOBS = env("CHAT_RECORD_JOBS", "1").strip().lower() not in {"0", "false", "no", "off"}
 DB_PATH = Path(env("CHAT_DB_PATH", str(STATE_ROOT / "chat.db")))
@@ -345,7 +345,7 @@ async def _request_llm(messages: list[dict[str, Any]], model: str, *, temperatur
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=30.0), headers=_headers()) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=900.0, write=60.0, pool=30.0), headers=_headers()) as client:
             response = await client.post(f"{LLM_URL}/api/llm/chat", json=body)
             if json_mode and response.status_code == 400:
                 body.pop("response_format", None)

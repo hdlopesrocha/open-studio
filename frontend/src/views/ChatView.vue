@@ -532,7 +532,7 @@ onMounted(async () => {
           </div>
           <details class="chat-context">
             <summary>What the assistant knows</summary>
-            <p>It knows the Audio (songwriting, DJ and SRT), Video/QVAC, Documents (PDF, translation and summary), Voice, Images, FFmpeg, yt-dlp, Files, Jobs and Settings workspaces, the complete external API, and which models and services must be enabled. It can execute whitelisted tools, inspect logs, repair services, read attachments, chain actions and generate OpenCode prompts for code-level fixes. Tool commands run on Qwen3 4B.</p>
+            <p>It knows the Audio (songwriting, DJ and SRT), Video/QVAC, Documents (PDF, translation and summary), Voice, Images, FFmpeg, yt-dlp, Files, Jobs and Settings workspaces, the complete external API, and which models and services must be enabled. It can execute whitelisted tools, inspect logs, repair services, read attachments, chain actions and generate OpenCode prompts for code-level fixes. Tool commands run on Qwen3 4B Instruct.</p>
           </details>
         </div>
 

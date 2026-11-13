@@ -45,7 +45,7 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 
 | Area | Functionality |
 |---|---|
-| **Chat** | Persistent local ChatGPT-style sessions with a favorite model used by default for every new conversation, message edit/revert/delete, shared-file attachments through the same file picker as the rest of the app, an iterative Qwen3 4B action agent and first-class voice training from shared reference audio. It knows the complete external REST API as well as every studio, service, model, file path and job workflow; uploads files, discovers endpoints, chains tools, controls services/models/jobs, reads logs, self-repairs failed services, retries work, suggests routes and emits copy-ready OpenCode prompts. It cannot use internal control endpoints and refuses empty file writes. |
+| **Chat** | Persistent local ChatGPT-style sessions with a favorite model used by default for every new conversation, message edit/revert/delete, shared-file attachments through the same file picker as the rest of the app, an iterative Qwen3 4B Instruct action agent and first-class voice training from shared reference audio. It knows the complete external REST API as well as every studio, service, model, file path and job workflow; uploads files, discovers endpoints, chains tools, controls services/models/jobs, reads logs, self-repairs failed services, retries work, suggests routes and emits copy-ready OpenCode prompts. It cannot use internal control endpoints and refuses empty file writes. |
 | **Audio** | ACE-Step 1.5 songs, structured lyrics, LLM drafts, takes and exports, plus DJ Library/Create/Mix tabs for analysis, style models, AI arrangements, adjustable segment count/target-duration mix scenes and effects, plus an integrated SRT tab for Whisper transcription/lyric alignment. Section-aware shared player, lyric section seeking, complete-lyrics copy, SRT export and bass/drums/snare/voice/air-reactive page colours. |
 | **Video** | Audio + SRT → analysed timeline → scene plan → procedural / Diffusers / ComfyUI / QVAC artwork → FFmpeg or OpenCV animation → styled subtitles → final MP4/MKV. QVAC video/image/upscale/model tabs are embedded in Video. Scene editor, timeline, image variants, depth maps, audio-reactive effects, pause/cancel, export panel. |
 | **Voice** | OmniVoice zero-shot cloning, voice design by attributes, auto voice, Whisper transcription, 646 languages, Piper built-in voices, batch synthesis, retraining, export/import, previews, history. All TTS runs in Docker. |
@@ -244,7 +244,7 @@ calls instead of guessing. Voice training uses the shared `voice_train` tool to
 upload a reference audio file with explicit consent and queue the normal Voice
 job. `api_request` handles the
 internal authentication header and supports JSON bodies plus query parameters.
-Ordinary prompts use a compact app core so local models stay responsive. Tool/command execution uses **Qwen3 4B** (`CHAT_AGENT_MODEL`) with a
+Ordinary prompts use a compact app core so local models stay responsive. Tool/command execution uses **Qwen3 4B Instruct** (`CHAT_AGENT_MODEL`) with a
 compact tool protocol, while the selected session model remains available for
 ordinary conversation. Set `OLLAMA_CONTEXT_LENGTH` (default 32768) for the full
 context window.
@@ -331,7 +331,7 @@ Open **Settings → Models & commands → Models** to browse and install every m
 pack. Each download is a normal job with progress, cancellation and retry in
 Jobs. The catalog covers:
 
-- Ollama LLMs
+- Ollama LLMs, including Qwen3 4B and the non-thinking Qwen3 4B Instruct model used by Chat
 - ACE-Step 1.5 Turbo, Base, SFT, XL Base, Turbo Shift 1/3 and Turbo Continuous GGUF packs
 - Whisper large-v3 and small
 - OPUS-MT/NLLB translation and T5 summaries
@@ -1104,7 +1104,7 @@ See [`.env.example`](.env.example) for every option and comment.
 
 | Component | Model(s) | Approx. download | Runtime |
 |---|---|---|---|
-| Chat commands | Qwen3 4B on Ollama | ~2.5 GB | Tool use and command execution |
+| Chat commands | Qwen3 4B Instruct on Ollama | ~2.5 GB | Tool use and command execution |
 | Music | ACE-Step 1.5 Turbo Q8_0 + 0.6B LM + Qwen3 embedding + VAE | ~7.7 GB | GGUF C++ CPU/Vulkan |
 | Lyrics/planner | Ollama `llama3.2:3b` (or chosen model) | 2 GB | Ollama CPU/GPU |
 | Voice | OmniVoice `k2-fsa/OmniVoice` + Whisper large-v3-turbo | 4–8 GB | Torch CPU/CUDA |
