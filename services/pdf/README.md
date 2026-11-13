@@ -9,7 +9,7 @@ Path-based PDF extraction for Open Studio. Every path is relative to
 - Tesseract + `pytesseract` for optional OCR (`eng`, `por` installed in the
   image; add more `tesseract-ocr-*` packages and rebuild to extend the list).
 - Multi-column reading-order heuristics, wrapped-line reconstruction and
-  hyphenation repair adapted from MicroTalk.
+  hyphenation repair.
 
 ## API (gateway prefix `/api/pdf`)
 

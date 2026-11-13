@@ -64,21 +64,6 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 | **Auth** | First-use password setup (scrypt), HttpOnly sessions, API keys, session revocation, password changes. Every service is behind the gateway. |
 | **UI** | Single Vue 3 app, one design system, right-aligned vertical navbar, responsive layout, consistent cards/forms/tables/job feedback. |
 
-### What was de-duplicated
-
-| Old project / service | New shared service |
-|---|---|
-| translation in micro-talk | `translation` — used by Documents, Subtitles, Translation page and any API client |
-| image generation in video-studio | `imagegen` — used by the Images page and the video pipeline |
-| media/FFmpeg in micro-talk + video-studio | `ffmpeg` — one media service for all tool pages and document finalisation |
-| TTS in micro-talk (Piper) + voice-studio (OmniVoice) | `voice` — one TTS service with two engines |
-| job managers in music/video/voice/micro-talk | `jobhub` — one global system with per-component queues |
-| separate file stores | `files` — one `/data/files` tree mounted into every container |
-| static auth tokens in micro-talk | `gateway` — first-run password, sessions and API keys |
-| lyrics/video LLM clients | `llm` — one OpenAI-compatible bridge to Ollama or any compatible endpoint |
-| duplicate music/DJ players | `SectionPlayer` — one waveform/section player used by Music and DJ |
-| separate summary page | Documents → Summary tab — same service and artifacts without a second top-level workspace |
-
 ---
 
 ## Screenshots

@@ -170,7 +170,7 @@ def project_relative(project_dir: Path, path: Path) -> str:
 
 
 class AssetCache:
-    """Small project-scoped cache manifest compatible with video-studio."""
+    """Small project-scoped cache manifest."""
 
     def __init__(self, project_dir: Path) -> None:
         self.project_dir = project_dir

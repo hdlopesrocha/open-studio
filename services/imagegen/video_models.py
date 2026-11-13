@@ -1,4 +1,4 @@
-"""Compatibility models mirroring the video-studio image service contract."""
+"""Compatibility models for the Imagegen video contract."""
 
 from __future__ import annotations
 
