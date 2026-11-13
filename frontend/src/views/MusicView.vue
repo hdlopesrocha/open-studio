@@ -2178,7 +2178,7 @@ const tabs = computed(() => [
     { id: "dj-mix", label: "DJ Mix" },
   ] : []),
   ...(serviceOnline("srt") ? [{ id: "srt", label: "SRT" }] : []),
-  ...(serviceOnline("music-engine") ? [{ id: "engine", label: "Engine" }] : []),
+  ...(serviceOnline("music") ? [{ id: "engine", label: "Engine" }] : []),
 ]);
 watch(tabs, (items) => {
   if (!items.some((item) => item.id === tab.value)) tab.value = items[0]?.id || "projects";
@@ -2469,7 +2469,6 @@ if (DEMO) initializeDemo();
     <ServiceNotice
       :services="[
         { name: 'music', label: 'Music / ACE-Step' },
-        { name: 'music-engine', label: 'ACE-Step Engine' },
         { name: 'dj', label: 'DJ Studio' },
         { name: 'srt', label: 'AI Subtitles' },
         { name: 'llm', label: 'Local LLM' },
@@ -3362,7 +3361,7 @@ if (DEMO) initializeDemo();
     </template>
 
     <!-- ---------------------------------------------------------------- engine -->
-    <template v-else-if="serviceOnline('music-engine') && tab === 'engine'">
+    <template v-else-if="serviceOnline('music') && tab === 'engine'">
       <div class="stack">
         <section class="panel engine-hero">
           <div class="engine-hero-inner">
