@@ -17,6 +17,8 @@ from fastapi.responses import StreamingResponse
 from openstudio_common import create_service_app, env, env_bool, env_int, service_url
 
 BASE_URL = env("LLM_BASE_URL", "http://ollama:11434/v1").rstrip("/")
+OLLAMA_URL = env("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
+OLLAMA_CONTEXT_LENGTH = env("OLLAMA_CONTEXT_LENGTH", "32768")
 API_KEY = env("LLM_API_KEY", "")
 DEFAULT_MODEL = env("LLM_MODEL", "llama3.2:3b")
 TIMEOUT = float(env("LLM_TIMEOUT_SECONDS", "300"))
@@ -86,6 +88,57 @@ async def list_models() -> dict[str, Any]:
     return {"items": items, "default": DEFAULT_MODEL, "base_url": BASE_URL}
 
 
+async def _native_ollama_chat(body: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "temperature": body.get("temperature", 0.7),
+        "top_p": body.get("top_p", 0.95),
+        "num_predict": int(body.get("max_tokens", 2048)),
+        "num_ctx": int(OLLAMA_CONTEXT_LENGTH),
+    }
+    if body.get("stop"):
+        options["stop"] = body["stop"]
+    native = {
+        "model": body["model"],
+        "messages": body["messages"],
+        "stream": False,
+        "think": bool(payload.get("think", False)),
+        "options": options,
+    }
+    response_format = body.get("response_format") or {}
+    if isinstance(response_format, dict) and response_format.get("type") == "json_object":
+        native["format"] = "json"
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT, headers=headers()) as client:
+            response = await client.post(f"{OLLAMA_URL}/api/chat", json=native)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Ollama native chat unreachable: {exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=response.text[:2000])
+    data = response.json()
+    message = data.get("message") or {}
+    transformed = {
+        "id": f"chatcmpl-native-{data.get('created_at', '')}",
+        "object": "chat.completion",
+        "created": 0,
+        "model": data.get("model") or body["model"],
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": message.get("content") or "",
+                **({"reasoning": message.get("reasoning")} if message.get("reasoning") else {}),
+            },
+            "finish_reason": data.get("done_reason") or "stop",
+        }],
+        "usage": {
+            "prompt_tokens": data.get("prompt_eval_count") or 0,
+            "completion_tokens": data.get("eval_count") or 0,
+            "total_tokens": (data.get("prompt_eval_count") or 0) + (data.get("eval_count") or 0),
+        },
+    }
+    return transformed
+
+
 async def _chat(payload: dict[str, Any], request: Request | None = None):
     messages = payload.get("messages") or []
     if not messages and payload.get("prompt"):
@@ -103,6 +156,8 @@ async def _chat(payload: dict[str, Any], request: Request | None = None):
     for key in ("stop", "seed", "presence_penalty", "frequency_penalty", "response_format", "think"):
         if payload.get(key) is not None:
             body[key] = payload[key]
+    if str(body.get("model") or "").lower().startswith("qwen") and not body["stream"]:
+        return await _native_ollama_chat(body, payload)
     url = f"{BASE_URL}/chat/completions"
     if body["stream"]:
         client = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=None, write=30.0))

@@ -37,8 +37,8 @@ CONTEXT_MESSAGES = int(env("CHAT_CONTEXT_MESSAGES", "40"))
 CONTEXT_CHARS = int(env("CHAT_CONTEXT_CHARS", "24000"))
 AGENT_STEPS = int(env("CHAT_AGENT_STEPS", "4"))
 AGENT_TOOL_CALLS = int(env("CHAT_AGENT_TOOL_CALLS", "8"))
-AGENT_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TIMEOUT_SECONDS", "120"))
-AGENT_LLM_TIMEOUT_SECONDS = float(env("CHAT_AGENT_LLM_TIMEOUT_SECONDS", "45"))
+AGENT_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TIMEOUT_SECONDS", "240"))
+AGENT_LLM_TIMEOUT_SECONDS = float(env("CHAT_AGENT_LLM_TIMEOUT_SECONDS", "120"))
 AGENT_TOOL_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TOOL_TIMEOUT_SECONDS", "90"))
 AGENT_CORE = (
     "Open Studio is a local creative suite. You execute user tasks through tools. "
@@ -919,6 +919,8 @@ async def _run_agent(session: dict[str, Any], message: str, attachments: list[st
             tool_calls += 1
         if step_results:
             results.extend(step_results)
+            if all(str(item.get("tool") or "") in FAST_RESULT_TOOLS for item in step_results) and not re.search(r"\b(and|then|also|both|after that)\b", message, re.I):
+                return results, _tool_summary(results)
             messages.append({"role": "user", "content": "TOOL RESULTS:\n" + _compact_results(step_results)})
         if not step_results:
             if results:
