@@ -1243,10 +1243,6 @@ const tabs = computed(() => [
   ] : []),
   ...(qvacOnline.value ? [{ id: "qvac", label: "QVAC" }] : []),
 ]);
-watch(tabs, (items) => {
-  if (!items.some((item) => item.id === tab.value)) tab.value = items[0]?.id || "projects";
-}, { immediate: true });
-
 const selectedScene = computed<VideoScene | null>(() => {
   if (!scenes.value.length) return null;
   return scenes.value.find((scene) => scene.scene_id === selectedSceneId.value) || scenes.value[0] || null;
@@ -1254,6 +1250,10 @@ const selectedScene = computed<VideoScene | null>(() => {
 
 const selectedSceneIndex = computed(() => (selectedScene.value ? scenes.value.findIndex((scene) => scene.scene_id === selectedScene.value?.scene_id) : -1));
 const videoJobs = computed(() => jobs.items.filter((job) => job.component === "video").sort((a, b) => b.created_at.localeCompare(a.created_at)));
+// Keep this after videoJobs: immediate tab evaluation reads the job-derived count.
+watch(tabs, (items) => {
+  if (!items.some((item) => item.id === tab.value)) tab.value = items[0]?.id || "projects";
+}, { immediate: true });
 const projectVideoJobs = computed(() => {
   const project = currentProject.value;
   if (!project) return [];
@@ -1307,11 +1307,18 @@ function demoPosterFor(projectId: string): string {
   return demoImagePaths[Math.abs(hash) % demoImagePaths.length] || "/demo/film-01.jpg";
 }
 
+const failedPosters = ref<Record<string, boolean>>({});
+
 function cardPoster(project: VideoProject): string {
+  if (failedPosters.value[project.id]) return "";
   if (DEMO) return demoPosterFor(project.id);
   if (project.cover_image) return mediaUrl(project.cover_image);
   if (project.final_thumbnail) return mediaUrl(project.final_thumbnail);
   return "";
+}
+
+function markPosterFailed(project: VideoProject): void {
+  failedPosters.value = { ...failedPosters.value, [project.id]: true };
 }
 
 function projectProgress(project: VideoProject): number {
@@ -2719,7 +2726,7 @@ onBeforeUnmount(() => {
           <div v-else-if="projects.length" class="video-projects-grid">
             <article v-for="project in projects" :key="project.id" class="panel video-project-card" @click="openProject(project.id)">
               <div class="video-project-poster">
-                <img v-if="cardPoster(project)" :src="cardPoster(project)" :alt="project.title" loading="lazy" />
+                <img v-if="cardPoster(project)" :src="cardPoster(project)" :alt="project.title" loading="lazy" @error="markPosterFailed(project)" />
                 <div v-else class="video-poster-fallback"><Clapperboard :size="34" /></div>
                 <div class="video-poster-shade" />
                 <div class="video-poster-top">
