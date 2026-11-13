@@ -34,7 +34,11 @@ def test_qvac_generate_serializes_and_retries(monkeypatch):
     async def no_sleep(_seconds):
         return None
 
+    async def idle():
+        return True
+
     monkeypatch.setattr(qvac, "_generate_locked", fake_generate)
+    monkeypatch.setattr(qvac, "_wait_for_qvac_idle", idle)
     monkeypatch.setattr(qvac.asyncio, "sleep", no_sleep)
     result = asyncio.run(qvac.generate({"prompt": "test"}))
     assert result["images"][0]["data"] == b"ok"

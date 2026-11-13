@@ -25,7 +25,8 @@ TIMEOUT = max(30.0, float(env("QVAC_IMAGE_TIMEOUT", "1200")))
 # imagegen-to-QVAC submissions serialized inside this process and retry the
 # registry's transient concurrency-policy rejection.
 _QVAC_LOCK = asyncio.Lock()
-_CONCURRENCY_ATTEMPTS = max(1, int(env("QVAC_CONCURRENCY_RETRIES", "8")))
+_CONCURRENCY_ATTEMPTS = max(1, int(env("QVAC_CONCURRENCY_RETRIES", "12")))
+_QUEUE_WAIT_SECONDS = max(30.0, float(env("QVAC_QUEUE_WAIT_SECONDS", "1200")))
 _TERMINAL_OK = {"completed", "complete", "succeeded", "success", "done", "finished"}
 _TERMINAL_FAIL = {"failed", "error", "cancelled", "canceled", "interrupted", "timeout"}
 _CONTAINER_KEYS = ("images", "files", "outputs", "output", "result", "data", "items", "artifacts", "saved_files")
@@ -304,6 +305,21 @@ def _is_concurrency_rejection(exc: Exception) -> bool:
     return "another diffusion request is already running" in text or "concurrency policy" in text or "request_rejected_by_policy" in text
 
 
+async def _wait_for_qvac_idle() -> bool:
+    """Wait until no QVAC job is running before submitting another image."""
+    deadline = time.monotonic() + _QUEUE_WAIT_SECONDS
+    async with httpx.AsyncClient(timeout=10.0, headers=jobhub_headers()) as client:
+        while time.monotonic() < deadline:
+            try:
+                response = await client.get(f"{JOBHUB_URL}/api/jobs?component=qvac&status=running")
+                if response.status_code < 400 and not (response.json().get("items") or []):
+                    return True
+            except (httpx.HTTPError, ValueError):
+                pass
+            await asyncio.sleep(3.0)
+    return False
+
+
 async def generate(
     params: dict[str, Any],
     *,
@@ -312,6 +328,8 @@ async def generate(
     """Serialize QVAC diffusion and retry registry-policy rejections."""
     last_error: Exception | None = None
     async with _QVAC_LOCK:
+        if not await _wait_for_qvac_idle():
+            raise QVACError("QVAC is still busy with another diffusion job; no slot became available in time")
         for attempt in range(_CONCURRENCY_ATTEMPTS):
             try:
                 return await _generate_locked(params, on_poll=on_poll)
@@ -319,7 +337,7 @@ async def generate(
                 last_error = exc
                 if not _is_concurrency_rejection(exc) or attempt >= _CONCURRENCY_ATTEMPTS - 1:
                     raise
-                delay = min(15.0, 2.0 + attempt * 2.0)
+                delay = min(20.0, 2.0 + attempt * 2.0)
                 log.warning("QVAC concurrency rejection; retrying in %.1fs (%s/%s)", delay, attempt + 1, _CONCURRENCY_ATTEMPTS)
                 await asyncio.sleep(delay)
     raise last_error or QVACError("QVAC image generation failed")
