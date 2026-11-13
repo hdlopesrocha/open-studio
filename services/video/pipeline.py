@@ -528,6 +528,20 @@ class Pipeline:
         project.planner = plan.planner
         project.stage = "planned"
         project.status = "processing"
+        stale_markers = (
+            "scene planning was used",
+            "scene descriptions enhanced with local ollama",
+            "ollama returned too few usable scene updates",
+            "ollama scene enhancement is capped",
+            "ollama request failed:",
+            "ollama is not reachable",
+            "ollama is running but model",
+        )
+        project.warnings = [
+            warning
+            for warning in project.warnings
+            if not any(marker in warning.lower() for marker in stale_markers)
+        ]
         project.warnings = list(dict.fromkeys(project.warnings + plan.warnings))[-40:]
         cover_path = paths.thumbnails_dir / "cover.jpg"
         try:

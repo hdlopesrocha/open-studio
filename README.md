@@ -1105,6 +1105,7 @@ See [`.env.example`](.env.example) for every option and comment.
 | Component | Model(s) | Approx. download | Runtime |
 |---|---|---|---|
 | Chat commands | Qwen3 4B Instruct on Ollama | ~2.5 GB | Tool use and command execution |
+| Video planning | Ollama LLM (subset, bounded) or deterministic | — | Story/scene enhancement with fallback |
 | Music | ACE-Step 1.5 Turbo Q8_0 + 0.6B LM + Qwen3 embedding + VAE | ~7.7 GB | GGUF C++ CPU/Vulkan |
 | Lyrics/planner | Ollama `llama3.2:3b` (or chosen model) | 2 GB | Ollama CPU/GPU |
 | Voice | OmniVoice `k2-fsa/OmniVoice` + Whisper large-v3-turbo | 4–8 GB | Torch CPU/CUDA |
@@ -1253,6 +1254,15 @@ Then disable/re-enable **Music** in Settings.
   `IMAGEGEN_INSTALL_DIFFUSERS=1` (default) or point `COMFYUI_URL` at a running
   ComfyUI and set a workflow.
 - GPU users should use `make up-gpu`.
+
+### Video planning falls back to deterministic mode
+
+The optional planner calls Ollama directly. Large projects are intentionally
+bounded to the first `VIDEO_PLANNER_OLLAMA_SCENE_LIMIT` scenes (default 12) and
+use `VIDEO_PLANNER_OLLAMA_TIMEOUT` (default 600s). Scenes outside that subset
+keep deterministic descriptions; re-running Plan replaces the previous planner
+warnings. Set `llm_mode` to `deterministic` in the project or Settings to skip
+Ollama entirely.
 
 ### QVAC fails or is extremely slow
 

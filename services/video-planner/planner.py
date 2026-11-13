@@ -9,6 +9,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Any
 
+from openstudio_common import env_int
+
 from mvstudio_shared.models import (
     AISettings,
     AudioAnalysis,
@@ -37,6 +39,11 @@ from mvstudio_shared.text import (
 from .ollama import OllamaPlanner, OllamaUnavailable
 
 logger = logging.getLogger("mvstudio.planner")
+
+# Sending hundreds of scene descriptions through a local CPU LLM is neither
+# bounded nor useful. Enhance a representative opening subset and leave the
+# remaining scenes on the deterministic planner.
+PLANNER_OLLAMA_SCENE_LIMIT = max(1, env_int("VIDEO_PLANNER_OLLAMA_SCENE_LIMIT", 12))
 
 MOTION_BY_SECTION = {
     "intro": ["slow_forward", "pan_right"],
@@ -257,14 +264,21 @@ class StoryPlanner:
                     raise RuntimeError(message)
                 warnings.append(message)
             else:
-                prompt = self._build_llm_prompt(scenes, visual_context, project_name, title)
+                target_scenes = scenes[:PLANNER_OLLAMA_SCENE_LIMIT]
+                prompt = self._build_llm_prompt(target_scenes, visual_context, project_name, title)
+                if len(target_scenes) < len(scenes):
+                    warnings.append(
+                        f"Ollama scene enhancement is capped at {len(target_scenes)} of "
+                        f"{len(scenes)} scenes to keep CPU planning bounded; the remaining scenes "
+                        "keep deterministic descriptions."
+                    )
                 try:
                     enhancement = ollama.enhance(prompt)
-                    scene_by_id = {scene.scene_id: scene for scene in scenes}
+                    scene_by_id = {scene.scene_id: scene for scene in target_scenes}
                     valid_updates = [
                         update for update in enhancement.scenes if update.scene_id in scene_by_id
                     ]
-                    if len(valid_updates) >= max(1, len(scenes) // 3):
+                    if len(valid_updates) >= max(1, len(target_scenes) // 2):
                         for update in valid_updates:
                             scene = scene_by_id[update.scene_id]
                             scene.description = update.description.strip()

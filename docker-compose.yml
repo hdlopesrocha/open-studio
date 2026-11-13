@@ -290,6 +290,8 @@ services:
       CONFIG_ROOT: /data/state/video
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      VIDEO_PLANNER_OLLAMA_TIMEOUT: ${VIDEO_PLANNER_OLLAMA_TIMEOUT:-600}
+      VIDEO_PLANNER_OLLAMA_SCENE_LIMIT: ${VIDEO_PLANNER_OLLAMA_SCENE_LIMIT:-12}
     extra_hosts:
       - host.docker.internal:host-gateway
 

@@ -9,6 +9,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
+from openstudio_common import env_float
+
 
 class SceneEnhancement(BaseModel):
     scene_id: int
@@ -45,10 +47,10 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 class OllamaPlanner:
-    def __init__(self, base_url: str, model: str, timeout: float = 180.0):
+    def __init__(self, base_url: str, model: str, timeout: float | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else env_float("VIDEO_PLANNER_OLLAMA_TIMEOUT", 600.0)
 
     def available(self) -> tuple[bool, str]:
         try:
