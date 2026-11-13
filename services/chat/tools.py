@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,7 @@ Direct media/document tools:
 - translate_text {"text": "...", "source_language": "auto", "target_language": "en", "model": "auto"}.
 - summarize_text {"text": "...", "length": "short|medium|long", "language": "auto"}.
 - synthesize_speech {"text": "...", "engine": "omnivoice|piper", "voice_id": "...", "language": "en"}.
+- voice_train {"name": "...", "audio_path": "uploads/reference.wav", "transcript": "...", "language": "en", "consent": true}.
 - transcribe_audio {"audio_path": "...", "title": "..."}.
 - generate_image {"prompt": "...", "provider": "auto|procedural|diffusers|comfyui|qvac", "width": 1024, "height": 1024, "model": ""}.
 - music_generate {"title": "...", "caption": "genre and arrangement description", "lyrics": "optional lyrics", "duration": 120, "genre": "Pop", "mood": "..."}.
@@ -137,6 +139,7 @@ Tools and arguments:
 - translate_text(text, source_language?, target_language?, model?)
 - summarize_text(text, length?, language?)
 - synthesize_speech(text, engine?, voice_id?, language?)
+- voice_train(name, audio_path, transcript?, language?, consent=true, description?, tags?, voice_id?)
 - transcribe_audio(audio_path)
 - generate_image(prompt, provider?, model?, width?, height?)
 - music_generate(title, caption, lyrics?, duration?, genre?, mood?)
@@ -157,6 +160,9 @@ API cookbook:
 - Summarize: POST /api/summary/summarize {"text":"...", "length":"medium",
   "language":"auto"}.
 - Speech: POST /api/voice/tts {"text":"...", "engine":"omnivoice"}.
+- Train a voice: POST /api/voice/train as multipart/form-data with name, audio,
+  transcript, language and consent=true; use voice_train instead of api_request so
+  the shared audio file is uploaded correctly. Only clone voices you own or have permission to use.
 - Transcribe/align: POST /api/srt/transcribe {"audio_path":"..."} or
   POST /api/srt/align {"audio_path":"...", "lyrics":"..."}.
 - Any job: POST /api/jobs {"component":"...", "action":"...", "title":"...",
@@ -175,7 +181,7 @@ TOOL_NAMES = {
     "wait_for_job", "start_job", "list_files", "read_file", "write_file",
     "api_catalog", "api_describe", "api_request", "diagnose", "opencode_prompt",
     "generate_image", "translate_text", "summarize_text", "synthesize_speech",
-    "transcribe_audio", "music_generate",
+    "transcribe_audio", "music_generate", "voice_train",
 }
 
 
@@ -218,6 +224,15 @@ def _resolve_ref(schema: Any, components: dict[str, Any], seen: set[str] | None 
         target = components.get(name)
         return _resolve_ref(target, components, seen) if isinstance(target, dict) else schema
     return schema
+
+
+def _request_body_schema(operation: dict[str, Any]) -> tuple[Any, str | None]:
+    content = (operation.get("requestBody") or {}).get("content") or {}
+    for content_type in ("application/json", "multipart/form-data"):
+        schema = (content.get(content_type) or {}).get("schema")
+        if schema is not None:
+            return schema, content_type
+    return None, None
 
 
 def _body_fields(schema: Any, components: dict[str, Any]) -> list[str]:
@@ -430,6 +445,42 @@ async def _request(service: str, method: str, path: str, body: Any = None, *, pa
     return {"ok": response.status_code < 400, "status": response.status_code, "data": payload}
 
 
+async def _request_upload(
+    service: str,
+    path: str,
+    field: str,
+    file_path: str,
+    data: dict[str, Any],
+    *,
+    timeout: float = 180.0,
+) -> dict[str, Any]:
+    base = SERVICE_URLS.get(service)
+    if not base:
+        return {"ok": False, "error": f"Unknown service '{service}'."}
+    relative = file_path.strip().lstrip("/")
+    if relative.startswith("data/files/"):
+        relative = relative[len("data/files/"):]
+    candidate = (FILES_ROOT / relative).resolve()
+    root = FILES_ROOT.resolve()
+    if candidate != root and root not in candidate.parents:
+        return {"ok": False, "error": "The audio file must be inside shared storage."}
+    if not candidate.is_file():
+        return {"ok": False, "error": f"Audio file not found: {relative}"}
+    mime = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+    try:
+        with candidate.open("rb") as handle:
+            files = {field: (candidate.name, handle, mime)}
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=timeout, write=120.0, pool=30.0), headers=_headers()) as client:
+                response = await client.post(f"{base.rstrip('/')}{path}", data={key: str(value) for key, value in data.items() if value is not None}, files=files)
+    except httpx.HTTPError as exc:
+        return {"ok": False, "error": f"{service} upload failed: {exc}"}
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        payload = response.text[:4000]
+    return {"ok": response.status_code < 400, "status": response.status_code, "data": payload}
+
+
 async def _openapi(service: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     target, spec = _spec_service(service)
     if spec:
@@ -468,7 +519,7 @@ async def _api_catalog(service: str = "") -> dict[str, Any]:
         for method, operation in operations.items():
             if method.lower() not in {"get", "post", "put", "patch", "delete"} or not isinstance(operation, dict):
                 continue
-            body_schema = (((operation.get("requestBody") or {}).get("content") or {}).get("application/json") or {}).get("schema")
+            body_schema, _ = _request_body_schema(operation)
             components = doc.get("components", {}).get("schemas", {})
             items.append({
                 "method": method.upper(),
@@ -494,7 +545,7 @@ async def _api_describe(service: str, path: str, method: str) -> dict[str, Any]:
     operation = operations.get(method.lower())
     if not isinstance(operation, dict):
         return {"ok": False, "error": f"{method.upper()} {path} is not available in {service}."}
-    body_schema = (((operation.get("requestBody") or {}).get("content") or {}).get("application/json") or {}).get("schema")
+    body_schema, content_type = _request_body_schema(operation)
     components = doc.get("components", {}).get("schemas", {})
     return {
         "ok": True,
@@ -505,6 +556,7 @@ async def _api_describe(service: str, path: str, method: str) -> dict[str, Any]:
             "summary": operation.get("summary") or operation.get("operationId") or "",
             "parameters": operation.get("parameters") or [],
             "request_body": body_schema,
+            "request_content_type": content_type,
             "request_example": _body_example(body_schema, components),
             "body_fields": _body_fields(body_schema, components),
             "components": _component_subset(body_schema, components),
@@ -580,6 +632,7 @@ TOOL_SERVICE_MAP = {
     "transcribe_audio": "srt",
     "synthesize_speech": "voice",
     "music_generate": "music",
+    "voice_train": "voice",
 }
 SERVICE_ALIAS_MAP = {
     "images": "imagegen", "imagegen": "imagegen", "translate": "translation",
@@ -916,6 +969,27 @@ async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[st
             body = {key: value for key, value in args.items() if key != "audio_path"}
             body["audio_path"] = audio_path
             return await _request("srt", "POST", "/api/srt/transcribe", body)
+        if name == "voice_train":
+            voice_name = str(args.get("name") or "").strip()
+            audio_path = str(args.get("audio_path") or "").strip()
+            if not voice_name:
+                return {"ok": False, "error": "Voice name is required."}
+            if not audio_path:
+                return {"ok": False, "error": "audio_path is required; use a shared reference audio file."}
+            if not bool(args.get("consent", False)):
+                return {"ok": False, "error": "Explicit consent is required: only clone voices you own or have permission to use. Pass consent=true after confirming."}
+            data = {
+                "name": voice_name,
+                "consent": "true",
+                "preprocess_prompt": "true" if args.get("preprocess_prompt", True) else "false",
+                "transcript": args.get("transcript"),
+                "language": args.get("language"),
+                "description": args.get("description"),
+                "tags": ", ".join(args.get("tags") or []) if isinstance(args.get("tags"), list) else args.get("tags"),
+            }
+            voice_id = str(args.get("voice_id") or "").strip()
+            path = f"/api/voice/voices/{voice_id}/retrain" if voice_id else "/api/voice/train"
+            return await _request_upload("voice", path, "audio", audio_path, data)
         if name == "music_generate":
             return await _music_generate(args)
         return {"ok": False, "error": f"Unknown agent tool '{name}'"}

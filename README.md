@@ -45,7 +45,7 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 
 | Area | Functionality |
 |---|---|
-| **Chat** | Persistent local ChatGPT-style sessions with message edit/revert/delete, shared-file attachments through the same file picker as the rest of the app, and an iterative Qwen3 4B action agent. It knows the complete external REST API as well as every studio, service, model, file path and job workflow; uploads files, discovers endpoints, chains tools, controls services/models/jobs, reads logs, self-repairs failed services, retries work, suggests routes and emits copy-ready OpenCode prompts. It cannot use internal control endpoints and refuses empty file writes. |
+| **Chat** | Persistent local ChatGPT-style sessions with message edit/revert/delete, shared-file attachments through the same file picker as the rest of the app, an iterative Qwen3 4B action agent and first-class voice training from shared reference audio. It knows the complete external REST API as well as every studio, service, model, file path and job workflow; uploads files, discovers endpoints, chains tools, controls services/models/jobs, reads logs, self-repairs failed services, retries work, suggests routes and emits copy-ready OpenCode prompts. It cannot use internal control endpoints and refuses empty file writes. |
 | **Audio** | ACE-Step 1.5 songs, structured lyrics, LLM drafts, takes and exports, plus DJ Library/Create/Mix tabs for analysis, style models, AI arrangements, adjustable segment count/target-duration mix scenes and effects, plus an integrated SRT tab for Whisper transcription/lyric alignment. Section-aware shared player, lyric section seeking, complete-lyrics copy, SRT export and bass/drums/snare/voice/air-reactive page colours. |
 | **Video** | Audio + SRT → analysed timeline → scene plan → procedural / Diffusers / ComfyUI / QVAC artwork → FFmpeg or OpenCV animation → styled subtitles → final MP4/MKV. QVAC video/image/upscale/model tabs are embedded in Video. Scene editor, timeline, image variants, depth maps, audio-reactive effects, pause/cancel, export panel. |
 | **Voice** | OmniVoice zero-shot cloning, voice design by attributes, auto voice, Whisper transcription, 646 languages, Piper built-in voices, batch synthesis, retraining, export/import, previews, history. All TTS runs in Docker. |
@@ -248,10 +248,13 @@ The Chat context includes a complete Open Studio operating guide and a generated
 reference for every external `/api/...` endpoint, covering Audio (songwriting,
 DJ, SRT), Video/QVAC, Documents (PDF, translation, summary), Voice, Images,
 FFmpeg, yt-dlp, Files, Jobs, Settings, models and per-page service requirements.
-The complete endpoint index is exposed at `GET /api/chat/context` and through
-`api_catalog`. A generated OpenAPI snapshot provides `api_describe` with real
-parameters, request-body fields, examples and component schemas, so the agent can
-construct valid REST calls instead of guessing. `api_request` handles the
+The complete endpoint index is injected into the Chat context and is also exposed
+at `GET /api/chat/context` and through `api_catalog`. A generated OpenAPI snapshot
+provides `api_describe` with real parameters, request-body fields, examples,
+multipart schemas and component schemas, so the agent can construct valid REST
+calls instead of guessing. Voice training uses the shared `voice_train` tool to
+upload a reference audio file with explicit consent and queue the normal Voice
+job. `api_request` handles the
 internal authentication header and supports JSON bodies plus query parameters.
 Ordinary prompts use a compact app core so local models stay responsive. Tool/command execution uses **Qwen3 4B** (`CHAT_AGENT_MODEL`) with a
 compact tool protocol, while the selected session model remains available for
@@ -1312,7 +1315,7 @@ make verify        # against a running stack (set OPENSTUDIO_PASSWORD)
 make screenshots   # demo build + headless Chrome capture
 ```
 
-Backend tests currently cover 90 cases across shared path safety, chat
+Backend tests currently cover 92 cases across shared path safety, chat
 sessions/messages with a mocked LLM, password/session/API-key security, job
 persistence, the service-manager dependency planner, music project/song/lyrics
 CRUD, lyric SRT timing/export, PDF extraction (real generated PDF), SRT/VTT/ASS

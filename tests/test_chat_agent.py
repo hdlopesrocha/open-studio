@@ -204,6 +204,51 @@ def test_chat_jobs_include_originating_prompt(monkeypatch):
     assert captured["body"]["params"]["chat_prompt"] == "Make a red square image"
 
 
+def test_voice_train_uploads_shared_audio_and_requires_consent(monkeypatch):
+    from services.chat import tools
+
+    captured: dict = {}
+
+    async def fake_upload(service, path, field, file_path, data, **kwargs):
+        captured.update({"service": service, "path": path, "field": field, "file_path": file_path, "data": data})
+        return {"ok": True, "data": {"id": "voice-job", "status": "queued"}}
+
+    monkeypatch.setattr(tools, "_request_upload", fake_upload)
+
+    denied = asyncio.run(tools.execute_tool("voice_train", {"name": "Test", "audio_path": "uploads/ref.wav"}))
+    assert denied["ok"] is False
+    assert "consent" in denied["error"].lower()
+
+    result = asyncio.run(tools.execute_tool("voice_train", {
+        "name": "Test voice",
+        "audio_path": "chat/uploads/ref.wav",
+        "transcript": "Hello",
+        "language": "en",
+        "consent": True,
+    }))
+    assert result["ok"] is True
+    assert captured["service"] == "voice"
+    assert captured["path"] == "/api/voice/train"
+    assert captured["field"] == "audio"
+    assert captured["file_path"] == "chat/uploads/ref.wav"
+    assert captured["data"]["consent"] == "true"
+
+
+def test_api_describe_supports_voice_training_multipart(monkeypatch):
+    import asyncio
+    from services.chat import tools
+
+    result = asyncio.run(tools.execute_tool("api_describe", {
+        "service": "voice",
+        "path": "/api/voice/train",
+        "method": "POST",
+    }))
+    assert result["ok"] is True
+    assert result["data"]["request_content_type"] == "multipart/form-data"
+    assert "name" in result["data"]["body_fields"]
+    assert "audio_file" in result["data"]["body_fields"]
+
+
 def test_agent_builds_copy_ready_opencode_prompt():
     from services.chat.tools import build_opencode_prompt
 

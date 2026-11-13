@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from openstudio_common import INTERNAL_TOKEN, STATE_ROOT, create_service_app, env, service_url, utc_now
 
-from .context import APP_CONTEXT, APP_CORE
+from .context import APP_CONTEXT
 from .tools import AGENT_TOOL_GUIDE, TOOL_GUIDE, TOOL_NAMES, attachment_context, execute_tool, repair_tool_failure, set_chat_prompt
 
 log = logging.getLogger("chat")
@@ -32,7 +32,7 @@ DEFAULT_SYSTEM_PROMPT = env(
     "CHAT_SYSTEM_PROMPT",
     "You are Open Studio's local AI assistant. Be clear, practical and concise. "
     "Use the application context below to help the user navigate and operate this studio.",
-).strip() + "\n\n" + APP_CORE
+).strip() + "\n\n" + APP_CONTEXT
 CONTEXT_MESSAGES = int(env("CHAT_CONTEXT_MESSAGES", "40"))
 CONTEXT_CHARS = int(env("CHAT_CONTEXT_CHARS", "24000"))
 AGENT_STEPS = int(env("CHAT_AGENT_STEPS", "4"))
@@ -40,11 +40,6 @@ AGENT_TOOL_CALLS = int(env("CHAT_AGENT_TOOL_CALLS", "8"))
 AGENT_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TIMEOUT_SECONDS", "240"))
 AGENT_LLM_TIMEOUT_SECONDS = float(env("CHAT_AGENT_LLM_TIMEOUT_SECONDS", "120"))
 AGENT_TOOL_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TOOL_TIMEOUT_SECONDS", "90"))
-AGENT_CORE = (
-    "Open Studio is a local creative suite. You execute user tasks through tools. "
-    "Use api_catalog for exact API paths and api_describe for request schemas. "
-    "Never claim success without a successful tool result. /no_think"
-)
 DB_PATH = Path(env("CHAT_DB_PATH", str(STATE_ROOT / "chat.db")))
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -332,10 +327,8 @@ async def _call_llm(session: dict[str, Any], messages: list[dict[str, Any]], pay
 def _context(session: dict[str, Any], history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     system_prompt = str(session.get("system_prompt") or "").strip()
-    if "COMPLETE EXTERNAL API REFERENCE" in system_prompt:
-        system_prompt = system_prompt.split("COMPLETE EXTERNAL API REFERENCE", 1)[0].strip()
-    if "OPEN STUDIO OVERVIEW" not in system_prompt:
-        system_prompt = (system_prompt + "\n\n" + APP_CORE).strip()
+    if "COMPLETE EXTERNAL API REFERENCE" not in system_prompt:
+        system_prompt = (system_prompt + "\n\n" + APP_CONTEXT).strip()
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     selected = history[-CONTEXT_MESSAGES:]
@@ -667,7 +660,7 @@ def _tool_summary(results: list[dict[str, Any]]) -> str:
                     lines.append("Jobs: " + ", ".join(f"{job.get('id')} {job.get('status')}" for job in jobs[:12]) + ".")
                 else:
                     lines.append(f"{tool}: completed.")
-        elif tool in {"generate_image", "transcribe_audio", "synthesize_speech", "music_generate", "start_job", "model_install", "recheck_model"}:
+        elif tool in {"generate_image", "transcribe_audio", "synthesize_speech", "music_generate", "voice_train", "start_job", "model_install", "recheck_model"}:
             job = _job_from_result(data)
             if job:
                 lines.append(f"{tool}: job {job.get('id')} is {job.get('status')}.")
@@ -751,8 +744,8 @@ def _grounding_tokens(results: list[dict[str, Any]]) -> set[str]:
 
 
 READ_ONLY_TOOLS = {"list_services", "list_models", "list_jobs", "get_job", "wait_for_job", "service_logs", "diagnose", "api_catalog", "read_file", "list_files", "navigate"}
-DIRECT_RESULT_TOOLS = READ_ONLY_TOOLS | {"translate_text", "summarize_text", "generate_image", "transcribe_audio", "synthesize_speech", "music_generate", "start_job", "service_action", "model_install", "recheck_model"}
-FAST_RESULT_TOOLS = {"navigate", "list_services", "list_models", "list_jobs", "list_files", "read_file", "translate_text", "summarize_text", "generate_image", "music_generate", "service_action", "model_install", "recheck_model", "api_catalog", "get_job", "wait_for_job", "service_logs", "opencode_prompt"}
+DIRECT_RESULT_TOOLS = READ_ONLY_TOOLS | {"translate_text", "summarize_text", "generate_image", "transcribe_audio", "synthesize_speech", "music_generate", "voice_train", "start_job", "service_action", "model_install", "recheck_model"}
+FAST_RESULT_TOOLS = {"navigate", "list_services", "list_models", "list_jobs", "list_files", "read_file", "translate_text", "summarize_text", "generate_image", "music_generate", "voice_train", "service_action", "model_install", "recheck_model", "api_catalog", "get_job", "wait_for_job", "service_logs", "opencode_prompt"}
 
 
 def _grounded_answer(text: str | None, results: list[dict[str, Any]]) -> str:
@@ -873,7 +866,7 @@ async def _run_agent(session: dict[str, Any], message: str, attachments: list[st
     history = STORE.list_messages(str(session.get("id") or ""))
     prior = history[:-1] if history and history[-1].get("role") == "user" else history
     messages = _context(session, prior)
-    agent_system = AGENT_CORE + "\n\n" + AGENT_TOOL_GUIDE + "\n\n" + protocol
+    agent_system = APP_CONTEXT + "\n\n" + AGENT_TOOL_GUIDE + "\n\n" + protocol
     if messages and messages[0].get("role") == "system":
         messages[0]["content"] = agent_system
     else:
