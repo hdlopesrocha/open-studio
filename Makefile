@@ -159,8 +159,8 @@ models-piper: ## Download the built-in Piper voices (US/UK/FR/DE/ES/PT)
 models-images: ## Warm the diffusers cache (optional; first generation downloads)
 	@echo "Images download on first use from Hugging Face, or set IMAGEGEN_DEFAULT_PROVIDER=procedural."
 
-models-qvac: ## QVAC models download on first model load (see QVAC page)
-	@echo "QVAC models are downloaded by the SDK on first load. Use the QVAC page or POST /api/qvac/models/load."
+models-qvac: ## Show how to install QVAC model packs
+	@echo "Install QVAC model packs from Settings → Models. The API is POST /api/qvac/models/install with {\"family\":\"...\"}."
 
 # ── Hardware ──────────────────────────────────────────────────────────────
 gpu-info: ## Show NVIDIA, Vulkan and /dev/dri status

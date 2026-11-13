@@ -275,7 +275,6 @@ const examples = {
           <CodeBlock label="Whisper (subtitles)" code="make models-whisper" />
           <CodeBlock label="Translation + summary" code="make models-text" />
           <CodeBlock label="Piper voices" code="make models-piper" />
-          <CodeBlock label="QVAC video models" code="make models-qvac" />
         </div>
       </section>
       <section class="panel">
