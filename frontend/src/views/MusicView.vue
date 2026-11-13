@@ -938,7 +938,7 @@ function initializeDemo(): void {
   currentJobId.value = demoJobs.find((job) => job.component === "music")?.id || demoJobs[0]?.id || "";
   genProvider.value = "ace_step";
   genModelId.value = (demoMusicCatalog as any).defaults?.model_id || "acestep-v15-turbo";
-  tab.value = "studio";
+  if (!requestedTab) tab.value = "studio";
   syncGenerationDefaults();
 }
 

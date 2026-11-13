@@ -2630,7 +2630,7 @@ onMounted(async () => {
   await loadProjects(true);
   jobs.connect();
   if (DEMO) {
-    tab.value = "editor";
+    if (!["projects", "editor", "render", "qvac"].includes(tab.value)) tab.value = "editor";
     await openProject(demoVideoProject.id, false);
   } else if (projects.value.length) {
     await openProject(projects.value[0].id, false);
