@@ -100,7 +100,7 @@ async def _chat(payload: dict[str, Any], request: Request | None = None):
         "max_tokens": payload.get("max_tokens", 2048),
         "stream": bool(payload.get("stream", False)),
     }
-    for key in ("stop", "seed", "presence_penalty", "frequency_penalty", "response_format"):
+    for key in ("stop", "seed", "presence_penalty", "frequency_penalty", "response_format", "think"):
         if payload.get(key) is not None:
             body[key] = payload[key]
     url = f"{BASE_URL}/chat/completions"

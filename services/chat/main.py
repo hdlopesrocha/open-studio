@@ -270,13 +270,14 @@ async def _llm_models() -> dict[str, Any]:
         return {"items": [], "default": DEFAULT_MODEL, "reachable": False, "error": str(exc)}
 
 
-async def _request_llm(messages: list[dict[str, Any]], model: str, *, temperature: float = 0.7, max_tokens: int = 2048, json_mode: bool = False) -> dict[str, Any]:
+async def _request_llm(messages: list[dict[str, Any]], model: str, *, temperature: float = 0.7, max_tokens: int = 2048, json_mode: bool = False, think: bool = False) -> dict[str, Any]:
     body = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
+        "think": think,
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
@@ -866,11 +867,12 @@ async def _run_agent(session: dict[str, Any], message: str, attachments: list[st
     messages = _context(session, prior)
     if messages and messages[0].get("role") == "system":
         system_content = str(messages[0].get("content") or "")
-        if "COMPLETE EXTERNAL API REFERENCE" not in system_content:
-            system_content += "\n\n" + APP_CONTEXT
-        messages[0]["content"] = system_content + "\n\n" + TOOL_GUIDE + "\n\n" + protocol
+        # Keep the full API reference in normal chat, but give the command agent a
+        # compact prompt; it can discover exact endpoints through api_catalog.
+        base = system_content.split("COMPLETE EXTERNAL API REFERENCE", 1)[0].strip() or APP_CONTEXT
+        messages[0]["content"] = base + "\n\n" + TOOL_GUIDE + "\n\n" + protocol + "\n\nUse api_catalog to discover exact API endpoints; do not invent paths. /no_think"
     else:
-        messages.insert(0, {"role": "system", "content": APP_CONTEXT + "\n\n" + TOOL_GUIDE + "\n\n" + protocol})
+        messages.insert(0, {"role": "system", "content": APP_CONTEXT + "\n\n" + TOOL_GUIDE + "\n\n" + protocol + "\n\nUse api_catalog to discover exact API endpoints; do not invent paths. /no_think"})
     messages.append({"role": "user", "content": message + ("\n\n" + attachment_context(attachments) if attachments else "")})
     if initial_actions and results:
         messages.append({"role": "assistant", "content": json.dumps({"thought": "Initial deterministic actions", "actions": initial_actions, "final": None})})
