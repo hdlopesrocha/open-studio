@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from openstudio_common import INTERNAL_TOKEN, STATE_ROOT, create_service_app, env, service_url, utc_now
 
 from .context import APP_CONTEXT, APP_CORE
-from .tools import AGENT_TOOL_GUIDE, TOOL_GUIDE, TOOL_NAMES, attachment_context, execute_tool, repair_tool_failure
+from .tools import AGENT_TOOL_GUIDE, TOOL_GUIDE, TOOL_NAMES, attachment_context, execute_tool, repair_tool_failure, set_chat_prompt
 
 log = logging.getLogger("chat")
 
@@ -824,6 +824,7 @@ async def _final_answer(messages: list[dict[str, Any]], model: str, results: lis
 
 
 async def _run_agent(session: dict[str, Any], message: str, attachments: list[str], model: str) -> tuple[list[dict[str, Any]], str | None]:
+    set_chat_prompt(message)
     initial_actions = _deterministic_actions(message)
     if _should_use_agent(message, attachments):
         if (

@@ -187,6 +187,23 @@ def test_api_spec_catalog_and_describe_expose_request_fields():
     assert "ProjectCreate" in described["data"]["components"]
 
 
+def test_chat_jobs_include_originating_prompt(monkeypatch):
+    from services.chat import tools
+
+    captured: dict = {}
+
+    async def fake_request(service, method, path, body=None, **kwargs):
+        captured.update({"service": service, "method": method, "path": path, "body": body})
+        return {"ok": True, "data": {"id": "job-1"}}
+
+    tools.set_chat_prompt("Make a red square image")
+    monkeypatch.setattr(tools, "_request", fake_request)
+    result = asyncio.run(tools.execute_tool("start_job", {"component": "imagegen", "action": "generate", "params": {"prompt": "red square"}}))
+    assert result["ok"] is True
+    assert captured["body"]["params"]["prompt"] == "red square"
+    assert captured["body"]["params"]["chat_prompt"] == "Make a red square image"
+
+
 def test_agent_builds_copy_ready_opencode_prompt():
     from services.chat.tools import build_opencode_prompt
 

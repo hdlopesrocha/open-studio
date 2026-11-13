@@ -22,6 +22,12 @@ const resultFiles = computed(() => {
   const seen = new Set(artifacts.value.map((item) => item.path));
   return files.filter((item: any) => item?.path && !seen.has(item.path));
 });
+const promptText = computed(() => {
+  const params = props.job.params || {};
+  const candidate = params.chat_prompt || params.prompt || params.caption || params.instruction || params.text || params.lyrics || params.brief || params.query;
+  if (typeof candidate !== "string") return "";
+  return candidate.trim().slice(0, 1200);
+});
 const outputLog = computed(() => {
   const value = props.job.result?.data?.output;
   if (Array.isArray(value)) return value.slice(-12).join("\n");
@@ -50,6 +56,7 @@ const outputLog = computed(() => {
       <span>{{ job.warnings.slice(-2).join(" · ") }}</span>
     </div>
     <div v-if="job.error" class="alert error">{{ job.error }}</div>
+    <div v-if="promptText" class="job-prompt"><span class="label">Prompt</span><span>{{ promptText }}</span></div>
     <pre v-if="outputLog" class="code" style="max-height: 150px">{{ outputLog }}</pre>
     <div v-if="artifacts.length || resultFiles.length" class="row" style="gap: 6px">
       <a
@@ -73,3 +80,8 @@ const outputLog = computed(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.job-prompt { display: flex; gap: 7px; align-items: flex-start; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.018); color: var(--muted); font-size: 11px; line-height: 1.45; }
+.job-prompt .label { flex: 0 0 auto; color: var(--text); font-weight: 650; text-transform: uppercase; letter-spacing: .04em; font-size: 9px; margin-top: 1px; }
+</style>

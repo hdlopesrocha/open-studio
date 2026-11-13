@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,11 @@ from openstudio_common import FILES_ROOT, INTERNAL_TOKEN, JOBHUB_URL, service_ur
 from .api_reference import API_REFERENCE
 
 log = logging.getLogger("chat.tools")
+CURRENT_CHAT_PROMPT: ContextVar[str] = ContextVar("chat_prompt", default="")
+
+
+def set_chat_prompt(prompt: str) -> None:
+    CURRENT_CHAT_PROMPT.set((prompt or "").strip()[:4000])
 
 SERVICE_URLS: dict[str, str] = {
     "admin": service_url("admin"),
@@ -769,6 +775,10 @@ Diagnostic data:
 Please identify the root cause, implement the smallest complete fix, run the relevant tests and builds, and report the changed files and verification results. Do not commit unless asked."""
 
 
+def _chat_prompt() -> str:
+    return CURRENT_CHAT_PROMPT.get().strip()
+
+
 async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
     args = args or {}
     try:
@@ -838,6 +848,11 @@ async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[st
             query = args.get("query") if isinstance(args.get("query"), dict) else (args.get("params") if isinstance(args.get("params"), dict) else None)
             if method not in {"GET", "POST", "PATCH", "PUT", "DELETE"}:
                 return {"ok": False, "error": "Unsupported HTTP method"}
+            if service in {"jobs", "jobhub"} and method == "POST" and isinstance(body, dict) and _chat_prompt():
+                body = dict(body)
+                job_params = dict(body.get("params") or {}) if isinstance(body.get("params"), dict) else {}
+                job_params.setdefault("chat_prompt", _chat_prompt())
+                body["params"] = job_params
             return await _request(service, method, path, body, params=query)
         if name == "diagnose":
             return await _diagnose()
@@ -861,7 +876,10 @@ async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[st
             action = str(args.get("action") or "").strip()
             if not component or not action:
                 return {"ok": False, "error": "start_job needs component and action"}
-            payload = {"component": component, "action": action, "title": str(args.get("title") or ""), "params": args.get("params") or {}}
+            params = dict(args.get("params") or {}) if isinstance(args.get("params"), dict) else {}
+            if _chat_prompt():
+                params.setdefault("chat_prompt", _chat_prompt())
+            payload = {"component": component, "action": action, "title": str(args.get("title") or ""), "params": params}
             return await _request("jobs", "POST", "/api/jobs", payload)
         if name == "generate_image":
             prompt = str(args.get("prompt") or "").strip()
