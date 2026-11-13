@@ -9,7 +9,7 @@ const files = require('./files');
 const mock = require('./mock');
 const { HttpError, JobCancelled } = require('./errors');
 const { normalizeModelConfig } = require('./validation');
-const { VIDEO_FAMILIES, IMAGE_FAMILIES } = require('./catalog');
+const { VIDEO_FAMILIES, IMAGE_FAMILIES, KNOWN_MODELS } = require('./catalog');
 
 const LOADED = new Map();
 let sdkPromise = null;
@@ -43,6 +43,16 @@ function sdkConstants(sdk) {
     .sort();
 }
 
+function knownModelSizes(sdk) {
+  const sizes = {};
+  for (const model of KNOWN_MODELS) {
+    const descriptor = sdk[model.name];
+    const size = Number(descriptor && typeof descriptor === 'object' ? descriptor.expectedSize : 0);
+    if (size > 0) sizes[model.name] = size;
+  }
+  return sizes;
+}
+
 async function sdkStatus(force = false) {
   if (config.mock) {
     return {
@@ -51,6 +61,7 @@ async function sdkStatus(force = false) {
       version: config.sdkPackageVersion,
       declared_version: config.sdkPackageVersion,
       constants: [],
+      model_sizes: {},
       error: 'mock mode',
     };
   }
@@ -63,6 +74,7 @@ async function sdkStatus(force = false) {
       version: (sdk.version || sdk.VERSION || null) || config.sdkPackageVersion,
       declared_version: config.sdkPackageVersion,
       constants: sdkConstants(sdk),
+      model_sizes: knownModelSizes(sdk),
       error: typeof sdk.loadModel === 'function' ? null : 'loadModel export is missing',
     };
   } catch (error) {
@@ -72,6 +84,7 @@ async function sdkStatus(force = false) {
       version: config.sdkPackageVersion,
       declared_version: config.sdkPackageVersion,
       constants: [],
+      model_sizes: {},
       error: error.message || String(error),
     };
   }

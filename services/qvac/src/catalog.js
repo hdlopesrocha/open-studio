@@ -304,14 +304,69 @@ const IMAGE_FAMILIES = {
   },
 };
 
-function modelCatalog(sdkConstants = []) {
+function modelCatalog(sdkConstants = [], { installed = new Set(), loaded = new Set(), sizes = {} } = {}) {
   const availableConstants = new Set(sdkConstants);
   return KNOWN_MODELS.map((model) => ({
     ...model,
     resolved: availableConstants.has(model.name),
     available: availableConstants.has(model.name) || config.mock,
     mockAvailable: config.mock,
+    installed: installed.has(model.name) || loaded.has(model.name),
+    size_bytes: Number(sizes[model.name]) || null,
   }));
+}
+
+function requiredModels(definition) {
+  const names = new Set();
+  for (const values of Object.values((definition && definition.requires) || {})) {
+    for (const value of Array.isArray(values) ? values : []) {
+      const name = String(value || '').trim();
+      if (!name || name.startsWith('<')) continue;
+      names.add(name);
+    }
+  }
+  return [...names];
+}
+
+function hasPlaceholders(definition) {
+  return Object.values((definition && definition.requires) || {}).some((values) =>
+    (Array.isArray(values) ? values : []).some((value) =>
+      String(value || '').trim().startsWith('<'),
+    ),
+  );
+}
+
+function familyCatalog(families, models) {
+  const definitions = new Map(models.map((model) => [model.name, model]));
+  return Object.fromEntries(
+    Object.entries(families).map(([key, definition]) => {
+      const required = requiredModels(definition);
+      const missing = required.filter((name) => !definitions.has(name));
+      const placeholders = hasPlaceholders(definition);
+      const installed = required.length > 0 && required.every((name) => {
+        const model = definitions.get(name);
+        return Boolean(model && model.installed);
+      });
+      const sizeBytes = required.reduce((sum, name) => {
+        const model = definitions.get(name);
+        return sum + (model && Number(model.size_bytes) ? Number(model.size_bytes) : 0);
+      }, 0);
+      return [
+        key,
+        {
+          ...definition,
+          install: {
+            available: !placeholders && missing.length === 0 && required.length > 0,
+            installed,
+            models: required,
+            missing,
+            placeholders,
+            size_bytes: sizeBytes || null,
+          },
+        },
+      ];
+    }),
+  );
 }
 
 function familyForModel(modelName) {
@@ -319,7 +374,17 @@ function familyForModel(modelName) {
   return entry ? entry.family : null;
 }
 
-function buildCatalog({ sdkInfo, memory }) {
+function buildCatalog({ sdkInfo, memory, installed = new Set(), loaded = [] }) {
+  const loadedNames = new Set(
+    (loaded || [])
+      .map((item) => String(item && (item.modelName || item.model) || ''))
+      .filter(Boolean),
+  );
+  const models = modelCatalog((sdkInfo && sdkInfo.constants) || [], {
+    installed,
+    loaded: loadedNames,
+    sizes: (sdkInfo && sdkInfo.model_sizes) || {},
+  });
   return {
     service: 'qvac',
     version: config.version,
@@ -333,8 +398,11 @@ function buildCatalog({ sdkInfo, memory }) {
       constants: sdkInfo ? (sdkInfo.constants || []) : [],
       mock: config.mock,
     },
-    models: modelCatalog((sdkInfo && sdkInfo.constants) || []),
-    model_families: { video: VIDEO_FAMILIES, image: IMAGE_FAMILIES },
+    models,
+    model_families: {
+      video: familyCatalog(VIDEO_FAMILIES, models),
+      image: familyCatalog(IMAGE_FAMILIES, models),
+    },
     devices: {
       requested: config.device,
       supported: ['gpu', 'cpu'],
@@ -413,6 +481,7 @@ function buildCatalog({ sdkInfo, memory }) {
       'GET /health',
       'GET /api/qvac/catalog',
       'GET /api/qvac/status',
+      'POST /api/qvac/models/install',
       'POST /api/qvac/models/load',
       'POST /api/qvac/models/unload',
       'GET /api/qvac/models/loaded',

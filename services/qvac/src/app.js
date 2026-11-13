@@ -8,6 +8,7 @@ const files = require('./files');
 const jobs = require('./jobs');
 const memory = require('./memory');
 const mock = require('./mock');
+const modelManager = require('./models');
 const sdk = require('./sdk');
 const { HttpError, JobCancelled } = require('./errors');
 const { normalizeModelConfig, validateVideo, validateImage, validateUpscale } = require('./validation');
@@ -63,7 +64,14 @@ app.get('/', (req, res) => {
 app.get('/api/qvac/catalog', async (req, res, next) => {
   try {
     const [sdkInfo, mem] = await Promise.all([sdk.sdkStatus(), memory.memoryStatus()]);
-    res.json(catalog.buildCatalog({ sdkInfo, memory: mem }));
+    res.json(
+      catalog.buildCatalog({
+        sdkInfo,
+        memory: mem,
+        installed: modelManager.installedNames(),
+        loaded: sdk.listLoaded(),
+      }),
+    );
   } catch (error) {
     next(error);
   }
@@ -102,6 +110,19 @@ app.post('/api/qvac/models/load', async (req, res, next) => {
       report: async () => {},
     });
     res.json({ model: sdk.publicModel(entry) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/qvac/models/install', async (req, res, next) => {
+  try {
+    if (jobs.activeJobs().length) {
+      throw new HttpError(409, 'Cancel active QVAC jobs before installing or re-checking model packs.');
+    }
+    const family = req.body && (req.body.family || req.body.model_family);
+    const result = await modelManager.installFamily(family);
+    res.json(result);
   } catch (error) {
     next(error);
   }
