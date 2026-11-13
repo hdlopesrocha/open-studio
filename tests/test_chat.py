@@ -165,6 +165,144 @@ def test_chat_job_history_uses_a_durable_outbox(tmp_path, monkeypatch):
     assert module.STORE.pending_job_history() == []
 
 
+def test_chat_can_generate_and_attach_speech(tmp_path, monkeypatch):
+    module = _load_chat(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    headers = _headers(module)
+    session = client.post("/api/chat/sessions", headers=headers, json={"title": "Voice"}).json()
+    assistant = module.STORE.append_message(
+        session["id"],
+        "assistant",
+        "Here is **the** [plan](https://example.test).\n\n```python\nprint('x')\n```",
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_start_speech(text, payload):
+        seen["text"] = text
+        seen["engine"] = payload.engine
+        seen["format"] = payload.format
+        return {"id": "voice-test-job", "status": "queued"}
+
+    monkeypatch.setattr(module, "_start_speech_job", fake_start_speech)
+    started = client.post(
+        f"/api/chat/sessions/{session['id']}/messages/{assistant['id']}/speech",
+        headers=headers,
+        json={"engine": "auto", "format": "mp3"},
+    )
+    assert started.status_code == 202
+    assert started.json()["id"] == "voice-test-job"
+    assert started.json()["message_id"] == assistant["id"]
+    assert "**" not in str(seen["text"])
+    assert "Code block omitted." in str(seen["text"])
+    assert seen["format"] == "mp3"
+
+    speech = {
+        "path": "voice/outputs/test/take.mp3",
+        "job_id": "voice-test-job",
+        "format": "mp3",
+        "duration_seconds": 1.4,
+        "voice": "Auto voice",
+        "generated_at": "2026-01-01T00:00:00Z",
+    }
+    attached = client.patch(
+        f"/api/chat/sessions/{session['id']}/messages/{assistant['id']}/speech",
+        headers=headers,
+        json=speech,
+    )
+    assert attached.status_code == 200
+    assert attached.json()["metadata"]["speech"]["path"] == speech["path"]
+
+    messages = client.get(
+        f"/api/chat/sessions/{session['id']}/messages",
+        headers=headers,
+    ).json()["items"]
+    assert messages[-1]["metadata"]["speech"]["job_id"] == "voice-test-job"
+
+    unsafe = client.patch(
+        f"/api/chat/sessions/{session['id']}/messages/{assistant['id']}/speech",
+        headers=headers,
+        json={**speech, "path": "chat/uploads/not-audio.mp3"},
+    )
+    assert unsafe.status_code == 422
+
+    user = module.STORE.append_message(session["id"], "user", "Speak this")
+    rejected = client.post(
+        f"/api/chat/sessions/{session['id']}/messages/{user['id']}/speech",
+        headers=headers,
+        json={},
+    )
+    assert rejected.status_code == 400
+
+
+def test_chat_speech_falls_back_to_an_installed_piper_voice(tmp_path, monkeypatch):
+    module = _load_chat(tmp_path, monkeypatch)
+
+    async def fake_catalog():
+        return {
+            "engines": [
+                {"id": "omnivoice", "available": False},
+                {"id": "piper", "available": True},
+            ],
+            "piper_voices": [
+                {"id": "pt-PT-dii", "language": "pt-PT", "available": True},
+                {"id": "en-US-lessac", "language": "en-US", "available": True},
+            ],
+        }
+
+    monkeypatch.setattr(module, "_voice_catalog", fake_catalog)
+    import asyncio
+
+    engine, voice = asyncio.run(module._resolve_speech_engine(module.SpeechCreate()))
+    assert engine == "piper"
+    assert voice == "en-US-lessac"
+
+    engine, voice = asyncio.run(
+        module._resolve_speech_engine(module.SpeechCreate(language="pt-BR"))
+    )
+    assert engine == "piper"
+    assert voice == "pt-PT-dii"
+
+    async def ready_catalog():
+        return {
+            "engines": [
+                {
+                    "id": "omnivoice",
+                    "available": True,
+                    "status": "ok",
+                    "model_loaded": True,
+                    "device": "cuda",
+                },
+                {"id": "piper", "available": True},
+            ],
+            "piper_voices": [{"id": "en-US-lessac", "language": "en-US", "available": True}],
+        }
+
+    monkeypatch.setattr(module, "_voice_catalog", ready_catalog)
+    engine, voice = asyncio.run(module._resolve_speech_engine(module.SpeechCreate()))
+    assert engine == "omnivoice"
+    assert voice is None
+
+    async def cpu_catalog():
+        return {
+            "engines": [
+                {
+                    "id": "omnivoice",
+                    "available": True,
+                    "status": "ok",
+                    "model_loaded": True,
+                    "device": "cpu",
+                },
+                {"id": "piper", "available": True},
+            ],
+            "piper_voices": [{"id": "en-US-lessac", "language": "en-US", "available": True}],
+        }
+
+    monkeypatch.setattr(module, "_voice_catalog", cpu_catalog)
+    engine, voice = asyncio.run(module._resolve_speech_engine(module.SpeechCreate()))
+    assert engine == "piper"
+    assert voice == "en-US-lessac"
+
+
 def test_chat_pending_jobs_exposes_outbox_entries(tmp_path, monkeypatch):
     module = _load_chat(tmp_path, monkeypatch)
     payload = {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import {
   Bot,
@@ -8,6 +8,7 @@ import {
   Loader2,
   MessageSquarePlus,
   Paperclip,
+  Pause,
   Pencil,
   RefreshCw,
   Send,
@@ -16,12 +17,13 @@ import {
   Trash2,
   Undo2,
   UserRound,
+  Volume2,
   Wrench,
   X,
 } from "lucide-vue-next";
 import { api, fileUrl, relativeTime } from "@/lib/api";
 import { DEMO } from "@/lib/types";
-import type { FileInfo } from "@/lib/types";
+import type { FileInfo, Job } from "@/lib/types";
 import { useSystemStore } from "@/stores/system";
 import { useToastStore } from "@/stores/toasts";
 import PageHeader from "@/components/PageHeader.vue";
@@ -49,10 +51,26 @@ interface ChatMessage {
   created_at: string;
 }
 
+interface ChatSpeech {
+  path: string;
+  job_id?: string;
+  format?: string;
+  duration_seconds?: number;
+  voice?: string;
+  generated_at?: string;
+}
+
+interface SpeechState {
+  status: "idle" | "queued" | "running" | "completed" | "failed";
+  jobId?: string;
+  error?: string;
+}
+
 const system = useSystemStore();
 const toasts = useToastStore();
 const router = useRouter();
 const llmOnline = computed(() => DEMO || !system.status || system.service("llm")?.online === true);
+const voiceOnline = computed(() => DEMO || !system.status || system.service("voice")?.online === true);
 const sessions = ref<ChatSession[]>([]);
 const messages = ref<ChatMessage[]>([]);
 const activeId = ref("");
@@ -71,6 +89,16 @@ const attachments = ref<Array<{ path: string; name: string; size?: number }>>([]
 const attachmentPickerOpen = ref(false);
 const messageEnd = ref<HTMLElement | null>(null);
 const composer = ref<HTMLTextAreaElement | null>(null);
+const speechStates = ref<Record<string, SpeechState>>({});
+const playingSpeechId = ref("");
+const speechTimers = new Map<string, number>();
+let speechAudio: HTMLAudioElement | null = null;
+const voiceReplies = ref(false);
+try {
+  voiceReplies.value = window.localStorage.getItem("openstudio.chat.voiceReplies") === "1";
+} catch {
+  voiceReplies.value = false;
+}
 
 const activeSession = computed(() => sessions.value.find((session) => session.id === activeId.value) || null);
 const attachmentStartPath = computed(() => activeId.value ? `chat/uploads/${activeId.value}` : "chat/uploads");
@@ -250,6 +278,203 @@ function markImageFailed(path: string): void {
   failedImages.value = { ...failedImages.value, [path]: true };
 }
 
+function messageSpeech(message: ChatMessage): ChatSpeech | null {
+  const speech = message.metadata?.speech;
+  if (!speech || typeof speech.path !== "string" || !speech.path) return null;
+  return speech as ChatSpeech;
+}
+
+function speechState(messageId: string): SpeechState {
+  return speechStates.value[messageId] || { status: "idle" };
+}
+
+function setSpeechState(messageId: string, state: SpeechState): void {
+  speechStates.value = { ...speechStates.value, [messageId]: state };
+}
+
+function speechBusy(messageId: string): boolean {
+  return ["queued", "running"].includes(speechState(messageId).status);
+}
+
+function speechLabel(message: ChatMessage): string {
+  if (speechBusy(message.id)) return "Generating voice…";
+  if (messageSpeech(message)) return playingSpeechId.value === message.id ? "Pause voice" : "Play voice";
+  if (speechState(message.id).status === "failed") return "Retry voice reply";
+  return "Voice reply";
+}
+
+function speechTitle(message: ChatMessage): string {
+  if (speechBusy(message.id)) return "Generating a voice reply…";
+  if (messageSpeech(message)) return playingSpeechId.value === message.id ? "Pause voice reply" : "Play voice reply";
+  if (!voiceOnline.value) return "Enable the Voice service to use voice replies";
+  if (speechState(message.id).status === "failed") return speechState(message.id).error || "Retry voice reply";
+  return "Generate a voice reply";
+}
+
+function stopSpeechPlayback(): void {
+  if (speechAudio) {
+    speechAudio.onended = null;
+    speechAudio.onerror = null;
+    speechAudio.pause();
+    speechAudio.src = "";
+    speechAudio = null;
+  }
+  playingSpeechId.value = "";
+}
+
+function playSpeech(message: ChatMessage, speech: ChatSpeech): void {
+  stopSpeechPlayback();
+  const audio = new Audio(fileUrl(speech.path));
+  speechAudio = audio;
+  playingSpeechId.value = message.id;
+  audio.onended = () => {
+    if (speechAudio === audio) {
+      speechAudio = null;
+      playingSpeechId.value = "";
+    }
+  };
+  audio.onerror = () => {
+    if (speechAudio === audio) {
+      speechAudio = null;
+      playingSpeechId.value = "";
+    }
+    toasts.error("Could not play the generated voice reply.");
+  };
+  void audio.play().catch(() => {
+    if (speechAudio === audio) {
+      speechAudio = null;
+      playingSpeechId.value = "";
+    }
+    toasts.info("Voice reply is ready. Click play to listen.");
+  });
+}
+
+function speechFromJob(job: Job, jobId: string): ChatSpeech | null {
+  const data = job.result?.data && typeof job.result.data === "object" ? job.result.data : {};
+  const output = data.output && typeof data.output === "object" ? data.output : data;
+  const artifact = (job.artifacts || []).find((item) => item.kind === "audio" && item.path);
+  const path = String(output.path || data.path || artifact?.path || "").trim();
+  if (!path) return null;
+  const duration = Number(output.duration_seconds ?? data.duration_seconds ?? 0);
+  const format = String(output.format || data.format || path.split(".").pop() || "mp3");
+  const voice = String(output.voice_name || output.voice || data.voice || "").trim();
+  return {
+    path,
+    job_id: jobId,
+    format,
+    duration_seconds: Number.isFinite(duration) && duration > 0 ? duration : undefined,
+    voice: voice || undefined,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+async function pollSpeech(message: ChatMessage, sessionId: string, jobId: string): Promise<void> {
+  const messageId = message.id;
+  const started = Date.now();
+  const tick = async () => {
+    speechTimers.delete(messageId);
+    try {
+      const job = await api.get<Job>(`/jobs/${jobId}`);
+      if (["queued", "running", "canceling"].includes(job.status)) {
+        if (Date.now() - started > 20 * 60 * 1000) {
+          throw new Error("Voice generation timed out. Check Job Center for the voice job.");
+        }
+        setSpeechState(messageId, {
+          status: job.status === "queued" ? "queued" : "running",
+          jobId,
+        });
+        speechTimers.set(messageId, window.setTimeout(tick, 1800));
+        return;
+      }
+      if (job.status !== "completed") {
+        const detail =
+          job.error ||
+          (job.status === "canceled" ? "Voice generation was canceled." : "Voice generation failed.");
+        setSpeechState(messageId, { status: "failed", jobId, error: detail });
+        toasts.error(detail);
+        return;
+      }
+      const speech = speechFromJob(job, jobId);
+      if (!speech) throw new Error("The voice job completed without an audio file.");
+      message.metadata = { ...(message.metadata || {}), speech };
+      setSpeechState(messageId, { status: "completed", jobId });
+      try {
+        const saved = await api.patch<ChatMessage>(
+          `/chat/sessions/${sessionId}/messages/${message.id}/speech`,
+          speech,
+        );
+        if (saved?.metadata) message.metadata = saved.metadata;
+      } catch {
+        // The audio still plays from the local result; persistence is best effort.
+      }
+      if (sessionId === activeId.value) playSpeech(message, speech);
+    } catch (error: any) {
+      const detail = error?.message || "Could not generate the voice reply.";
+      setSpeechState(messageId, { status: "failed", jobId, error: detail });
+      toasts.error(detail);
+    }
+  };
+  setSpeechState(messageId, { status: "queued", jobId });
+  speechTimers.set(messageId, window.setTimeout(tick, 900));
+}
+
+async function generateSpeech(message: ChatMessage): Promise<void> {
+  if (message.role !== "assistant" || speechBusy(message.id)) return;
+  if (DEMO) {
+    toasts.info("Demo mode: voice replies require the Voice service.");
+    return;
+  }
+  if (!voiceOnline.value) {
+    toasts.error("Enable the Voice service in Settings to generate voice replies.");
+    return;
+  }
+  const sessionId = message.session_id || activeId.value;
+  if (!sessionId) return;
+  setSpeechState(message.id, { status: "queued" });
+  try {
+    const raw = await api.post<any>(`/chat/sessions/${sessionId}/messages/${message.id}/speech`, {
+      engine: "auto",
+      format: "mp3",
+    });
+    const jobId = String(raw?.id || raw?.job_id || "").trim();
+    if (!jobId) throw new Error("The Voice service did not return a job id.");
+    void pollSpeech(message, sessionId, jobId);
+  } catch (error: any) {
+    const detail = error?.message || "Could not start the voice reply.";
+    setSpeechState(message.id, { status: "failed", error: detail });
+    toasts.error(detail);
+  }
+}
+
+function speakMessage(message: ChatMessage): void {
+  if (speechBusy(message.id)) return;
+  const speech = messageSpeech(message);
+  if (speech) {
+    if (playingSpeechId.value === message.id) stopSpeechPlayback();
+    else playSpeech(message, speech);
+    return;
+  }
+  void generateSpeech(message);
+}
+
+function toggleVoiceReplies(): void {
+  if (!voiceOnline.value && !voiceReplies.value) {
+    toasts.error("Enable the Voice service in Settings to use voice replies.");
+    return;
+  }
+  voiceReplies.value = !voiceReplies.value;
+  try {
+    window.localStorage.setItem("openstudio.chat.voiceReplies", voiceReplies.value ? "1" : "0");
+  } catch {
+    // The preference still applies for this session.
+  }
+  toasts.info(
+    voiceReplies.value
+      ? "New assistant replies will be generated as voice replies."
+      : "Automatic voice replies are off.",
+  );
+}
+
 async function revertMessage(message: ChatMessage, edit = false) {
   if (sending.value || !activeId.value) return;
   if (!window.confirm(edit ? "Revert to this message and edit it? Later messages will be removed." : "Revert the conversation to this point? Later messages will be removed.")) return;
@@ -353,6 +578,8 @@ async function send() {
     await scrollToBottom();
     const navigation = (data.actions || []).find((action: any) => action.tool === "navigate" && action.data?.path);
     if (navigation?.data?.path) router.push(navigation.data.path);
+    const assistant = (data.messages || []).find((item) => item.role === "assistant");
+    if (assistant && voiceReplies.value && voiceOnline.value) void generateSpeech(assistant);
   } catch (err: any) {
     error.value = err?.message || "The local model could not answer.";
     // Keep the user's attempted message visible so it can be retried or edited.
@@ -399,6 +626,12 @@ function onComposerKeydown(event: KeyboardEvent) {
     void send();
   }
 }
+
+onBeforeUnmount(() => {
+  for (const timer of speechTimers.values()) window.clearTimeout(timer);
+  speechTimers.clear();
+  stopSpeechPlayback();
+});
 
 onMounted(async () => {
   await loadModels();
@@ -465,6 +698,27 @@ onMounted(async () => {
             <div class="chat-avatar"><Bot v-if="message.role === 'assistant'" :size="15" /><UserRound v-else :size="15" /></div>
             <div class="chat-bubble-wrap">
               <div class="chat-bubble">{{ message.content }}</div>
+              <div v-if="message.role === 'assistant'" class="chat-speech-row">
+                <button
+                  class="chip clickable chat-voice-chip"
+                  :class="{ active: playingSpeechId === message.id }"
+                  :disabled="speechBusy(message.id) || (!voiceOnline && !messageSpeech(message))"
+                  :title="speechTitle(message)"
+                  @click="speakMessage(message)"
+                >
+                  <Loader2 v-if="speechBusy(message.id)" :size="10" class="spin" />
+                  <Pause v-else-if="playingSpeechId === message.id" :size="10" />
+                  <Volume2 v-else :size="10" />
+                  {{ speechLabel(message) }}
+                </button>
+                <span
+                  v-if="speechState(message.id).error && !messageSpeech(message)"
+                  class="small chat-speech-error"
+                  :title="speechState(message.id).error"
+                >
+                  {{ speechState(message.id).error }}
+                </span>
+              </div>
               <div v-if="messageAttachments(message).length" class="chat-message-attachments">
                 <a
                   v-for="path in imageAttachments(message)"
@@ -508,6 +762,14 @@ onMounted(async () => {
                 </button>
                 <button v-if="message.role === 'user'" class="icon-btn" title="Revert to this message" @click="revertMessage(message, false)">
                   <Undo2 :size="12" />
+                </button>
+                <button
+                  v-if="message.role === 'assistant' && messageSpeech(message) && !speechBusy(message.id)"
+                  class="icon-btn"
+                  title="Generate a new voice take"
+                  @click="generateSpeech(message)"
+                >
+                  <RefreshCw :size="12" />
                 </button>
                 <button class="icon-btn" title="Delete message" @click="deleteMessage(message)">
                   <Trash2 :size="12" />
@@ -560,6 +822,15 @@ onMounted(async () => {
                 <option v-for="item in models" :key="item.id" :value="item.id">{{ item.name || item.id }}</option>
               </select>
               <button class="icon-btn" title="Attach or choose a shared file" :disabled="attachments.length >= 8" @click="attachmentPickerOpen = true"><Paperclip :size="13" /></button>
+              <button
+                class="chip clickable chat-voice-toggle"
+                :class="{ active: voiceReplies }"
+                :disabled="!voiceOnline && !voiceReplies"
+                :title="voiceReplies ? 'Stop speaking new assistant replies' : 'Speak every new assistant reply'"
+                @click="toggleVoiceReplies"
+              >
+                <Volume2 :size="11" /> {{ voiceReplies ? "Voice replies on" : "Voice replies" }}
+              </button>
               <span class="chat-local-context"><Sparkles :size="11" /> local session context</span>
             </span>
             <button class="btn btn-primary" :disabled="sending || !draft.trim() || !llmOnline" @click="send"><Loader2 v-if="sending" :size="14" class="spin" /><Send v-else :size="14" /> Send</button>
@@ -602,6 +873,10 @@ onMounted(async () => {
 .chat-message.assistant .chat-bubble { border-top-left-radius: 4px; }
 .chat-message.user .chat-bubble { border-top-right-radius: 4px; }
 .chat-bubble.typing { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
+.chat-speech-row { display: flex; align-items: center; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
+.chat-voice-chip { padding: 2px 7px; font-size: 10px; }
+.chat-speech-error { color: #fda4af; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-voice-toggle { font-size: 10px; padding: 2px 7px; height: auto; }
 .chat-message-actions { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--muted); font-size: 10px; }
 .chat-message-actions .icon-btn { opacity: 0; transition: opacity 120ms ease; }
 .chat-message:hover .chat-message-actions .icon-btn, .chat-message-actions .icon-btn:focus-visible { opacity: 1; }

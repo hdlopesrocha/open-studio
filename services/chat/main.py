@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -26,6 +26,8 @@ log = logging.getLogger("chat")
 
 VERSION = "1.0.0"
 LLM_URL = env("LLM_URL", service_url("llm")).rstrip("/")
+VOICE_URL = env("VOICE_URL", service_url("voice")).rstrip("/")
+CHAT_TTS_MAX_CHARS = int(env("CHAT_TTS_MAX_CHARS", "8000"))
 DEFAULT_MODEL = env("CHAT_MODEL", env("LLM_MODEL", "llama3.2:3b"))
 AGENT_MODEL = env("CHAT_AGENT_MODEL", "qwen3:4b-instruct")
 DEFAULT_SYSTEM_PROMPT = env(
@@ -76,6 +78,24 @@ class MessageCreate(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=2048, ge=1, le=8192)
     attachments: list[str] = Field(default_factory=list, max_length=12)
+
+
+class SpeechCreate(BaseModel):
+    engine: Literal["auto", "omnivoice", "piper"] = "auto"
+    voice_id: str | None = Field(default=None, max_length=32)
+    piper_voice: str | None = Field(default=None, max_length=80)
+    language: str | None = Field(default=None, max_length=64)
+    format: Literal["mp3", "wav", "flac"] = "mp3"
+    speed: float = Field(default=1.0, ge=0.25, le=4.0)
+
+
+class MessageSpeech(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    job_id: str | None = Field(default=None, max_length=200)
+    format: str | None = Field(default=None, max_length=16)
+    duration_seconds: float | None = Field(default=None, ge=0.0)
+    voice: str | None = Field(default=None, max_length=300)
+    generated_at: str | None = Field(default=None, max_length=64)
 
 
 class ChatStore:
@@ -302,6 +322,43 @@ class ChatStore:
             self._conn.commit()
             return cursor.rowcount > 0
 
+    def get_message(self, session_id: str, message_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM messages WHERE id=? AND session_id=?", (message_id, session_id)
+            ).fetchone()
+            return self._message(row) if row is not None else None
+
+    def attach_speech(
+        self,
+        session_id: str,
+        message_id: str,
+        speech: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT role, metadata_json FROM messages WHERE id=? AND session_id=?",
+                (message_id, session_id),
+            ).fetchone()
+            if row is None or row["role"] != "assistant":
+                return None
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata["speech"] = speech
+            self._conn.execute(
+                "UPDATE messages SET metadata_json=? WHERE id=? AND session_id=?",
+                (json.dumps(metadata, ensure_ascii=False), message_id, session_id),
+            )
+            self._conn.commit()
+            updated = self._conn.execute(
+                "SELECT * FROM messages WHERE id=? AND session_id=?", (message_id, session_id)
+            ).fetchone()
+        return self._message(updated)
+
     def revert_from(self, session_id: str, message_id: str) -> int | None:
         """Delete a message and every message after it, preserving DB order."""
         with self._lock:
@@ -331,6 +388,137 @@ async def _llm_models() -> dict[str, Any]:
         return {"items": [], "default": DEFAULT_MODEL, "reachable": False, "error": response.text[:500]}
     except Exception as exc:  # noqa: BLE001
         return {"items": [], "default": DEFAULT_MODEL, "reachable": False, "error": str(exc)}
+
+
+def _speech_text(content: str) -> str:
+    """Convert an assistant reply into clean text suitable for speech."""
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"```.*?```", " Code block omitted. ", text, flags=re.S)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "link", text)
+    text = re.sub(r"(?m)^\s*#{1,6}\s*", "", text)
+    text = re.sub(r"[*_]{1,3}", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()[:CHAT_TTS_MAX_CHARS].strip()
+
+
+def _clean_speech_path(path: str) -> str:
+    raw = str(path or "").strip()
+    parts = Path(raw).parts
+    if not raw or raw.startswith("/") or ".." in parts or parts[:2] != ("voice", "outputs"):
+        raise HTTPException(status_code=422, detail="Speech path must point inside voice/outputs")
+    return raw
+
+
+async def _voice_catalog() -> dict[str, Any]:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=3.0, read=5.0, write=5.0, pool=3.0),
+        headers=_headers(),
+    ) as client:
+        response = await client.get(f"{VOICE_URL}/api/voice/catalog")
+    if response.status_code >= 400:
+        return {}
+    data = response.json()
+    return data if isinstance(data, dict) else {}
+
+
+async def _resolve_speech_engine(payload: SpeechCreate) -> tuple[str, str | None]:
+    """Use OmniVoice when ready, otherwise fall back to an installed Piper voice."""
+    if payload.engine != "auto":
+        return payload.engine, payload.piper_voice
+    try:
+        catalog = await _voice_catalog()
+    except Exception:  # noqa: BLE001
+        return "auto", payload.piper_voice
+    engines = {
+        str(item.get("id") or ""): item
+        for item in catalog.get("engines") or []
+        if isinstance(item, dict)
+    }
+    omnivoice = engines.get("omnivoice", {})
+    omni_ready = bool(
+        omnivoice.get("available")
+        and omnivoice.get("status") == "ok"
+        and omnivoice.get("model_loaded")
+    )
+    # OmniVoice is high quality but far too slow on CPU for interactive chat.
+    # Prefer it only on accelerated hardware; otherwise use Piper.
+    device = str(omnivoice.get("device") or "").lower()
+    accelerated = any(token in device for token in ("cuda", "gpu", "mps"))
+    if omni_ready and accelerated:
+        return "omnivoice", None
+    piper = engines.get("piper", {})
+    if not piper.get("available"):
+        return ("omnivoice", None) if omni_ready else ("auto", payload.piper_voice)
+    wanted = (payload.language or "").lower()
+    voices = [
+        item
+        for item in catalog.get("piper_voices") or []
+        if isinstance(item, dict) and item.get("available") and item.get("id")
+    ]
+
+    def score(item: dict[str, Any]) -> tuple[int, int]:
+        language = str(item.get("language") or "").lower()
+        exact = bool(
+            wanted
+            and (
+                language == wanted
+                or language.startswith(f"{wanted}-")
+                or wanted.startswith(f"{language}-")
+            )
+        )
+        same_base = bool(
+            wanted and language.split("-", 1)[0] == wanted.split("-", 1)[0]
+        )
+        if wanted:
+            rank = 0 if exact else (1 if same_base else 2)
+            return (rank, 0 if item.get("id") == "en-US-lessac" else 1)
+        return (0 if language.startswith("en") else 1, 0 if item.get("id") == "en-US-lessac" else 1)
+
+    voices.sort(key=score)
+    return "piper", str(voices[0]["id"]) if voices else payload.piper_voice
+
+
+async def _start_speech_job(text: str, payload: SpeechCreate) -> dict[str, Any]:
+    engine, piper_voice = await _resolve_speech_engine(payload)
+    body = {
+        "text": text,
+        "engine": engine,
+        "mode": "voice" if engine == "omnivoice" and payload.voice_id else "auto",
+        "voice_id": payload.voice_id if engine == "omnivoice" else None,
+        "piper_voice": piper_voice,
+        "language": payload.language,
+        "format": payload.format,
+        "speed": payload.speed,
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+            headers=_headers(),
+        ) as client:
+            response = await client.post(f"{VOICE_URL}/api/voice/tts", json=body)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="The Voice service timed out while queueing speech.") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail=f"The Voice service is unreachable: {exc}") from exc
+    if response.status_code >= 400:
+        detail = response.text[:2000]
+        try:
+            value = response.json().get("detail")
+            if isinstance(value, str):
+                detail = value
+        except (ValueError, TypeError):
+            pass
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    job = response.json()
+    if not isinstance(job, dict) or not (job.get("id") or job.get("job_id")):
+        raise HTTPException(status_code=502, detail="The Voice service returned an invalid job response.")
+    job.setdefault("job_id", job.get("id"))
+    return job
 
 
 async def _request_llm(messages: list[dict[str, Any]], model: str, *, temperature: float = 0.7, max_tokens: int = 2048, json_mode: bool = False, think: bool = False) -> dict[str, Any]:
@@ -1252,6 +1440,40 @@ async def send_message(session_id: str, payload: MessageCreate) -> dict[str, Any
         "model": assistant_model,
         "actions": actions,
     }
+
+
+@router.post("/sessions/{session_id}/messages/{message_id}/speech", status_code=202)
+async def create_message_speech(
+    session_id: str,
+    message_id: str,
+    payload: SpeechCreate,
+) -> dict[str, Any]:
+    message = STORE.get_message(session_id, message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if message["role"] != "assistant":
+        raise HTTPException(status_code=400, detail="Only assistant messages can be spoken")
+    text = _speech_text(str(message.get("content") or ""))
+    if not text:
+        raise HTTPException(status_code=422, detail="The assistant message has no speakable text")
+    job = await _start_speech_job(text, payload)
+    job["message_id"] = message_id
+    return job
+
+
+@router.patch("/sessions/{session_id}/messages/{message_id}/speech")
+async def attach_message_speech(
+    session_id: str,
+    message_id: str,
+    payload: MessageSpeech,
+) -> dict[str, Any]:
+    speech = payload.model_dump()
+    speech["path"] = _clean_speech_path(speech["path"])
+    speech["generated_at"] = speech.get("generated_at") or _now()
+    message = STORE.attach_speech(session_id, message_id, speech)
+    if message is None:
+        raise HTTPException(status_code=404, detail="Assistant message not found")
+    return message
 
 
 @router.delete("/sessions/{session_id}/messages/{message_id}")
