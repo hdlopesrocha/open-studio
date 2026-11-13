@@ -418,7 +418,12 @@ async def _llm_plan(session: dict[str, Any], message: str, attachments: list[str
 async def _run_agent(session: dict[str, Any], message: str, attachments: list[str], model: str) -> tuple[list[dict[str, Any]], str | None]:
     actions = _deterministic_actions(message)
     if not actions:
-        actions = await _llm_plan(session, message, attachments, model)
+        try:
+            actions = await _llm_plan(session, message, attachments, model)
+        except HTTPException:
+            # A planner failure must not turn an ordinary chat question into an
+            # API failure; the normal model answer can still succeed.
+            actions = []
     results: list[dict[str, Any]] = []
     for action in actions[:4]:
         result = await execute_tool(action["tool"], action.get("args") or {})
