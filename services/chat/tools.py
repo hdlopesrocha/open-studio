@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -23,9 +24,14 @@ SERVICE_URLS: dict[str, str] = {
     "voice": service_url("voice"),
     "srt": service_url("srt"),
     "images": service_url("imagegen"),
+    "imagegen": service_url("imagegen"),
     "docs": service_url("docs"),
+    "documents": service_url("docs"),
     "translation": service_url("translation"),
+    "translate": service_url("translation"),
     "summary": service_url("summary"),
+    "summarize": service_url("summary"),
+    "subtitles": service_url("srt"),
     "pdf": service_url("pdf"),
     "ffmpeg": service_url("ffmpeg"),
     "ytdlp": service_url("ytdlp"),
@@ -55,25 +61,159 @@ NAVIGATION = {
 }
 
 TOOL_GUIDE = """
-Available agent tools (return JSON only when you decide to use them):
-- navigate {"path": "/music?tab=dj-mix"} — guide the user to a workspace.
+You are the execution layer for Open Studio, not just a planner. When the user
+asks you to do something, use the tools below to do it. Inspect results and
+continue with the next tool until the task is complete or you are blocked.
+
+Tool results include {ok, data} and sometimes an error. Never claim an operation
+succeeded unless the tool result says ok. Do not ask for confirmation for normal
+non-destructive actions; ask only when a required input cannot be inferred.
+
+Core control:
+- navigate {"path": "/video?tab=qvac"} — guide the user to a workspace.
 - list_services {} — list service state.
-- service_action {"name": "dj", "action": "enable|disable|restart|build"} — repair/start a service.
+- service_action {"name": "dj", "action": "enable|disable|restart|build"}.
 - service_logs {"name": "dj", "lines": 120} — inspect recent container logs.
 - list_models {} — list model packs and installed state.
 - model_install {"model_id": "translation-nllb"} — queue a model download/verification.
 - recheck_model {"model_id": "music-ace-step"} — verify an installed model.
 - list_jobs {"status": "failed"} — inspect jobs; omit status for recent jobs.
 - job_action {"job_id": "...", "action": "cancel|retry"}.
+- get_job {"job_id": "..."}.
+- wait_for_job {"job_id": "...", "timeout_seconds": 60} — poll a job briefly.
+- start_job {"component": "ffmpeg", "action": "...", "title": "...", "params": {...}}.
+
+Files:
 - list_files {"path": ""} — inspect shared files.
 - read_file {"path": "..."} — read a text file from shared storage.
 - write_file {"path": "...", "content": "..."} — create a text artifact.
-- api_request {"service": "imagegen", "method": "POST", "path": "/api/images/generate", "body": {...}} — call a whitelisted Open Studio REST API. Use the application context and endpoint names; do not invent paths.
-- diagnose {} — collect service, model, failed job and log information for a problem.
-- opencode_prompt {"problem": "..."} — produce a copy-ready prompt for OpenCode with app context.
 
-Use at most 4 tools per turn. Do not run destructive file deletion or disable core services.
+Direct media/document tools:
+- translate_text {"text": "...", "source_language": "auto", "target_language": "en", "model": "auto"}.
+- summarize_text {"text": "...", "length": "short|medium|long", "language": "auto"}.
+- synthesize_speech {"text": "...", "engine": "omnivoice|piper", "voice_id": "...", "language": "en"}.
+- transcribe_audio {"audio_path": "...", "title": "..."}.
+- generate_image {"prompt": "...", "provider": "auto|procedural|diffusers|comfyui|qvac", "width": 1024, "height": 1024, "model": ""}.
+- music_generate {"title": "...", "caption": "genre and arrangement description", "lyrics": "optional lyrics", "duration": 120, "genre": "Pop", "mood": "..."}.
+
+REST API access:
+- api_catalog {"service": "music"} — list the real endpoints and methods for a service.
+  Omit service to list available services.
+- api_describe {"service": "music", "path": "/api/music/projects", "method": "POST"} — inspect the request schema before building a complex body.
+- api_request {"service": "music", "method": "POST", "path": "/api/music/projects", "body": {...}} — call an endpoint directly.
+  Use api_catalog/api_describe first when you do not know the exact path or body.
+
+Repair and handoff:
+- diagnose {} — collect services, models, failed jobs and logs.
+- opencode_prompt {"problem": "..."} — produce a copy-ready OpenCode prompt with app context.
+
+Useful workflow:
+1. For a generation task, start the job with the relevant tool or api_request.
+2. Use get_job or wait_for_job to check it when the task expects a finished result.
+3. Report the job id, status, artifacts and the page where the user can inspect it.
+Never disable core services or delete files unless the user explicitly asks.
 """
+TOOL_NAMES = {
+    "navigate", "list_services", "service_action", "service_logs", "list_models",
+    "model_install", "recheck_model", "list_jobs", "job_action", "get_job",
+    "wait_for_job", "start_job", "list_files", "read_file", "write_file",
+    "api_catalog", "api_describe", "api_request", "diagnose", "opencode_prompt",
+    "generate_image", "translate_text", "summarize_text", "synthesize_speech",
+    "transcribe_audio", "music_generate",
+}
+
+
+STATIC_ENDPOINTS: dict[str, list[dict[str, str]]] = {
+    "jobs": [
+        {"method": "GET", "path": "/api/jobs", "summary": "List jobs, optionally by component/status"},
+        {"method": "POST", "path": "/api/jobs", "summary": "Create a job with component, action, title and params"},
+        {"method": "GET", "path": "/api/jobs/{job_id}", "summary": "Read job status, progress, error and artifacts"},
+        {"method": "POST", "path": "/api/jobs/{job_id}/cancel", "summary": "Cancel a job"},
+        {"method": "POST", "path": "/api/jobs/{job_id}/retry", "summary": "Retry a job"},
+    ],
+    "files": [
+        {"method": "GET", "path": "/api/files/list", "summary": "List a shared-storage folder"},
+        {"method": "GET", "path": "/api/files/read", "summary": "Read a text file"},
+        {"method": "POST", "path": "/api/files/write", "summary": "Write a text file"},
+        {"method": "POST", "path": "/api/files/rename", "summary": "Rename a file or folder"},
+        {"method": "POST", "path": "/api/files/move", "summary": "Move or copy a file"},
+    ],
+    "music": [
+        {"method": "GET", "path": "/api/music/projects", "summary": "List song projects"},
+        {"method": "POST", "path": "/api/music/projects", "summary": "Create a project with title, description and artist"},
+        {"method": "POST", "path": "/api/music/projects/{project_id}/songs", "summary": "Create a song in a project"},
+        {"method": "POST", "path": "/api/music/songs/{song_id}/generate", "summary": "Queue ACE-Step generation for a song"},
+        {"method": "POST", "path": "/api/music/lyrics/draft", "summary": "Queue an LLM lyric draft"},
+        {"method": "GET", "path": "/api/music/songs/{song_id}/takes", "summary": "List generated takes"},
+        {"method": "GET", "path": "/api/music/catalog", "summary": "Read music models and defaults"},
+    ],
+    "dj": [
+        {"method": "GET", "path": "/api/dj/tracks", "summary": "List analysed DJ tracks"},
+        {"method": "POST", "path": "/api/dj/tracks", "summary": "Add a track from shared storage"},
+        {"method": "POST", "path": "/api/dj/tracks/{track_id}/analyze", "summary": "Queue DJ analysis"},
+        {"method": "POST", "path": "/api/dj/generations", "summary": "Queue a DJ generation"},
+        {"method": "POST", "path": "/api/dj/mixes", "summary": "Create a mix draft"},
+        {"method": "POST", "path": "/api/dj/mixes/{mix_id}/scene", "summary": "Plan an AI mix scene"},
+        {"method": "POST", "path": "/api/dj/mixes/{mix_id}/render", "summary": "Render a mix"},
+    ],
+    "video": [
+        {"method": "GET", "path": "/api/video/projects", "summary": "List video projects"},
+        {"method": "POST", "path": "/api/video/projects", "summary": "Create a video project from audio and SRT"},
+        {"method": "GET", "path": "/api/video/projects/{project_id}", "summary": "Read a video project"},
+        {"method": "POST", "path": "/api/video/projects/{project_id}/run", "summary": "Run the video pipeline"},
+        {"method": "GET", "path": "/api/video/projects/{project_id}/assets", "summary": "List project assets"},
+        {"method": "GET", "path": "/api/video/projects/{project_id}/scenes", "summary": "List planned scenes"},
+    ],
+    "images": [
+        {"method": "POST", "path": "/api/images/generate", "summary": "Queue image generation"},
+        {"method": "POST", "path": "/api/images/upscale", "summary": "Queue image upscaling"},
+        {"method": "GET", "path": "/api/images/gallery", "summary": "List generated images"},
+        {"method": "GET", "path": "/api/images/models", "summary": "List image models"},
+        {"method": "GET", "path": "/api/images/providers", "summary": "List image providers"},
+    ],
+    "translation": [
+        {"method": "POST", "path": "/api/translate/translate", "summary": "Translate text synchronously"},
+        {"method": "POST", "path": "/api/translate/translate/job", "summary": "Queue a translation job"},
+        {"method": "GET", "path": "/api/translate/models", "summary": "List translation models"},
+        {"method": "GET", "path": "/api/translate/languages", "summary": "List supported languages"},
+    ],
+    "summary": [
+        {"method": "POST", "path": "/api/summary/summarize", "summary": "Summarize text synchronously"},
+        {"method": "POST", "path": "/api/summary/summarize/job", "summary": "Queue a summary job"},
+    ],
+    "voice": [
+        {"method": "POST", "path": "/api/voice/tts", "summary": "Queue speech synthesis"},
+        {"method": "POST", "path": "/api/voice/batch", "summary": "Queue batch speech synthesis"},
+        {"method": "GET", "path": "/api/voice/catalog", "summary": "List engines, voices and formats"},
+        {"method": "GET", "path": "/api/voice/voices", "summary": "List trained voices"},
+    ],
+    "srt": [
+        {"method": "POST", "path": "/api/srt/transcribe", "summary": "Queue Whisper transcription"},
+        {"method": "POST", "path": "/api/srt/align", "summary": "Queue lyric alignment"},
+        {"method": "POST", "path": "/api/srt/from-text", "summary": "Create timed subtitles from text"},
+        {"method": "POST", "path": "/api/srt/convert", "summary": "Convert SRT/VTT/ASS"},
+    ],
+    "docs": [
+        {"method": "POST", "path": "/api/docs/run", "summary": "Run the document pipeline"},
+    ],
+    "pdf": [
+        {"method": "POST", "path": "/api/pdf/extract", "summary": "Extract text or pages from a PDF"},
+    ],
+    "ffmpeg": [
+        {"method": "POST", "path": "/api/ffmpeg/run", "summary": "Run an FFmpeg operation"},
+    ],
+    "ytdlp": [
+        {"method": "POST", "path": "/api/ytdlp/jobs", "summary": "Queue a yt-dlp download"},
+    ],
+    "qvac": [
+        {"method": "GET", "path": "/api/qvac/status", "summary": "Read QVAC runtime status"},
+    ],
+}
+
+
+def _static_catalog(service: str) -> list[dict[str, str]]:
+    aliases = {"imagegen": "images", "translate": "translation", "summarize": "summary", "subtitles": "srt", "documents": "docs"}
+    return STATIC_ENDPOINTS.get(aliases.get(service, service), [])
 
 
 def _headers() -> dict[str, str]:
@@ -100,6 +240,203 @@ async def _request(service: str, method: str, path: str, body: Any = None, *, ti
     return {"ok": response.status_code < 400, "status": response.status_code, "data": payload}
 
 
+async def _openapi(service: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    base = SERVICE_URLS.get(service)
+    if not base:
+        return None, {"ok": False, "error": f"Unknown service '{service}'. Available: {', '.join(SERVICE_URLS)}"}
+    try:
+        async with httpx.AsyncClient(timeout=20.0, headers=_headers()) as client:
+            response = await client.get(f"{base.rstrip('/')}/openapi.json")
+    except httpx.HTTPError as exc:
+        return None, {"ok": False, "error": f"Could not read the OpenAPI schema for {service}: {exc}"}
+    if response.status_code >= 400:
+        return None, {"ok": False, "error": f"OpenAPI schema unavailable for {service} ({response.status_code})."}
+    try:
+        return response.json(), None
+    except (ValueError, TypeError):
+        return None, {"ok": False, "error": f"OpenAPI schema for {service} was not valid JSON."}
+
+
+async def _api_catalog(service: str = "") -> dict[str, Any]:
+    if not service:
+        return {"ok": True, "data": {"services": sorted(SERVICE_URLS)}}
+    doc, error = await _openapi(service)
+    if error:
+        items = _static_catalog(service)
+        return {"ok": True, "data": {"service": service, "endpoints": items, "total": len(items), "source": "built-in catalog (OpenAPI docs disabled)"}}
+    paths = doc.get("paths") or {}
+    items: list[dict[str, Any]] = []
+    for path, operations in paths.items():
+        if not path.startswith("/api/") or "/internal/" in path:
+            continue
+        if not isinstance(operations, dict):
+            continue
+        for method, operation in operations.items():
+            if method.lower() not in {"get", "post", "put", "patch", "delete"} or not isinstance(operation, dict):
+                continue
+            items.append({
+                "method": method.upper(),
+                "path": path,
+                "summary": str(operation.get("summary") or operation.get("operationId") or "")[:160],
+            })
+    return {"ok": True, "data": {"service": service, "endpoints": items[:400], "total": len(items)}}
+
+
+async def _api_describe(service: str, path: str, method: str) -> dict[str, Any]:
+    doc, error = await _openapi(service)
+    if error:
+        for item in _static_catalog(service):
+            if item["path"] == path and item["method"] == method.upper():
+                return {"ok": True, "data": {"service": service, "method": method.upper(), "path": path, "summary": item["summary"], "request_body": None, "note": "OpenAPI docs are disabled; use the tool guide fields or api_request with the documented payload."}}
+        return error
+    operations = (doc.get("paths") or {}).get(path)
+    if not isinstance(operations, dict):
+        return {"ok": False, "error": f"{path} is not present in the {service} OpenAPI schema."}
+    operation = operations.get(method.lower())
+    if not isinstance(operation, dict):
+        return {"ok": False, "error": f"{method.upper()} {path} is not available in {service}."}
+    body_schema = (((operation.get("requestBody") or {}).get("content") or {}).get("application/json") or {}).get("schema")
+    return {
+        "ok": True,
+        "data": {
+            "service": service,
+            "method": method.upper(),
+            "path": path,
+            "summary": operation.get("summary") or operation.get("operationId") or "",
+            "parameters": operation.get("parameters") or [],
+            "request_body": body_schema,
+            "components": doc.get("components", {}).get("schemas", {}),
+        },
+    }
+
+
+async def _wait_for_job(job_id: str, timeout_seconds: float) -> dict[str, Any]:
+    if not job_id:
+        return {"ok": False, "error": "job_id is required"}
+    timeout_seconds = max(0.0, min(120.0, float(timeout_seconds or 0)))
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    latest: dict[str, Any] = {}
+    while True:
+        latest = await _request("jobs", "GET", f"/api/jobs/{job_id}")
+        if not latest.get("ok"):
+            return latest
+        job = latest.get("data") or {}
+        if str(job.get("status") or "") in {"completed", "failed", "canceled"}:
+            return latest
+        if asyncio.get_running_loop().time() >= deadline:
+            return latest
+        await asyncio.sleep(2.0)
+
+
+async def _music_generate(args: dict[str, Any]) -> dict[str, Any]:
+    title = str(args.get("title") or "Open Studio song").strip() or "Open Studio song"
+    project = await _request("music", "POST", "/api/music/projects", {
+        "title": title,
+        "description": str(args.get("description") or ""),
+        "artist": str(args.get("artist") or ""),
+    })
+    if not project.get("ok"):
+        return project
+    project_data = project.get("data") or {}
+    project_id = str(project_data.get("id") or "")
+    if not project_id:
+        return {"ok": False, "error": "Music project creation did not return an id.", "data": project}
+    song_body: dict[str, Any] = {
+        "title": title,
+        "artist": str(args.get("artist") or ""),
+        "genre": str(args.get("genre") or "Pop"),
+        "mood": str(args.get("mood") or "Introspective"),
+        "style": str(args.get("style") or ""),
+        "language": str(args.get("language") or "en"),
+        "duration": float(args.get("duration") or 150),
+        "bpm": int(args.get("bpm") or 96),
+    }
+    song = await _request("music", "POST", f"/api/music/projects/{project_id}/songs", song_body)
+    if not song.get("ok"):
+        return song
+    song_data = song.get("data") or {}
+    song_id = str(song_data.get("id") or "")
+    if not song_id:
+        return {"ok": False, "error": "Song creation did not return an id.", "data": song}
+    generate_body: dict[str, Any] = {
+        "provider": str(args.get("provider") or "ace_step"),
+        "mode": "full",
+        "caption": str(args.get("caption") or args.get("prompt") or title),
+        "duration": float(args.get("duration") or 150),
+        "bpm": int(args.get("bpm") or 96),
+        "variations": int(args.get("variations") or 1),
+    }
+    if args.get("lyrics"):
+        generate_body["lyrics"] = str(args.get("lyrics"))
+    job = await _request("music", "POST", f"/api/music/songs/{song_id}/generate", generate_body)
+    return {"ok": bool(job.get("ok")), "data": {"project": project_data, "song": song_data, "job": job.get("data")}, "status": job.get("status")}
+
+
+def _compact_services(payload: Any) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    items = []
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "name": item.get("name"),
+            "label": item.get("label"),
+            "core": bool(item.get("core")),
+            "enabled": bool(item.get("enabled")),
+            "running": bool(item.get("running")),
+            "state": item.get("state"),
+            "health": item.get("health"),
+            "status": item.get("status"),
+        })
+    return {
+        "items": items,
+        "core": data.get("core"),
+        "optional": data.get("optional"),
+        "enabled": data.get("enabled"),
+        "running": data.get("running"),
+        "total": data.get("total", len(items)),
+    }
+
+
+def _compact_models(payload: Any) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    items = []
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "id": item.get("id"),
+            "label": item.get("label"),
+            "group": item.get("group"),
+            "installed": bool(item.get("installed")),
+            "size": item.get("size"),
+            "detail": item.get("detail"),
+        })
+    return {"items": items, "total": data.get("total", len(items)), "installed": data.get("installed")}
+
+
+def _compact_jobs(payload: Any) -> dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+    items = []
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "id": item.get("id"),
+            "component": item.get("component"),
+            "action": item.get("action"),
+            "title": item.get("title"),
+            "status": item.get("status"),
+            "stage": item.get("stage"),
+            "progress": item.get("progress"),
+            "error": item.get("error"),
+            "created_at": item.get("created_at"),
+            "updated_at": item.get("updated_at"),
+            "artifacts": item.get("artifacts") or [],
+        })
+    return {"items": items, "total": data.get("total", len(items)), "limit": data.get("limit"), "offset": data.get("offset")}
+
+
 async def _diagnose() -> dict[str, Any]:
     services = await _request("admin", "GET", "/api/admin/services")
     models = await _request("admin", "GET", "/api/admin/models")
@@ -115,7 +452,12 @@ async def _diagnose() -> dict[str, Any]:
         if result.get("ok"):
             lines = str(result.get("data", {}).get("lines") or "").splitlines()
             logs[name] = lines[-80:]
-    source = {"services": services.get("data"), "models": models.get("data"), "failed_jobs": jobs.get("data"), "logs": logs}
+    source = {
+        "services": _compact_services(services.get("data")),
+        "models": _compact_models(models.get("data")),
+        "failed_jobs": _compact_jobs(jobs.get("data")),
+        "logs": logs,
+    }
     prompt = build_opencode_prompt(
         "Open Studio agent diagnosis",
         details=json.dumps(source, ensure_ascii=False)[:12000],
@@ -154,7 +496,10 @@ async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[st
                 path = matches[0] if matches else "/"
             return {"ok": True, "data": {"path": path, "label": NAVIGATION.get(path, path)}}
         if name == "list_services":
-            return await _request("admin", "GET", "/api/admin/services")
+            result = await _request("admin", "GET", "/api/admin/services")
+            if result.get("ok") and isinstance(result.get("data"), dict):
+                result["data"] = _compact_services(result["data"])
+            return result
         if name == "service_action":
             service = str(args.get("name") or "").strip()
             action = str(args.get("action") or "").strip().lower()
@@ -166,7 +511,10 @@ async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[st
             lines = max(10, min(500, int(args.get("lines") or 120)))
             return await _request("admin", "GET", f"/api/admin/services/{service}/logs?lines={lines}")
         if name == "list_models":
-            return await _request("admin", "GET", "/api/admin/models")
+            result = await _request("admin", "GET", "/api/admin/models")
+            if result.get("ok") and isinstance(result.get("data"), dict):
+                result["data"] = _compact_models(result["data"])
+            return result
         if name in {"model_install", "recheck_model"}:
             model_id = str(args.get("model_id") or "").strip()
             if not model_id:
@@ -175,7 +523,10 @@ async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[st
         if name == "list_jobs":
             status = str(args.get("status") or "").strip()
             suffix = f"&status={status}" if status else ""
-            return await _request("jobs", "GET", f"/api/jobs?limit=30{suffix}")
+            result = await _request("jobs", "GET", f"/api/jobs?limit=30{suffix}")
+            if result.get("ok") and isinstance(result.get("data"), dict):
+                result["data"] = _compact_jobs(result["data"])
+            return result
         if name == "job_action":
             job_id = str(args.get("job_id") or "").strip()
             action = str(args.get("action") or "").strip().lower()
@@ -189,8 +540,12 @@ async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[st
             path = str(args.get("path") or "")
             return await _request("files", "GET", f"/api/files/read?path={path}")
         if name == "write_file":
-            path = str(args.get("path") or "")
+            path = str(args.get("path") or "").strip()
             content = str(args.get("content") or "")
+            if not path:
+                return {"ok": False, "error": "path is required"}
+            if not content.strip():
+                return {"ok": False, "error": "content is required; refusing to write an empty file"}
             return await _request("files", "POST", "/api/files/write", {"path": path, "content": content})
         if name == "api_request":
             service = str(args.get("service") or "").strip()
@@ -206,6 +561,61 @@ async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[st
             problem = str(args.get("problem") or "Open Studio issue")
             details = str(args.get("details") or "")
             return {"ok": True, "data": {"prompt": build_opencode_prompt(problem, details=details)}}
+        if name == "api_catalog":
+            return await _api_catalog(str(args.get("service") or "").strip())
+        if name == "api_describe":
+            return await _api_describe(str(args.get("service") or "").strip(), str(args.get("path") or "").strip(), str(args.get("method") or "GET").strip())
+        if name == "get_job":
+            job_id = str(args.get("job_id") or "").strip()
+            if not job_id:
+                return {"ok": False, "error": "job_id is required"}
+            return await _request("jobs", "GET", f"/api/jobs/{job_id}")
+        if name == "wait_for_job":
+            return await _wait_for_job(str(args.get("job_id") or "").strip(), float(args.get("timeout_seconds") or 0))
+        if name == "start_job":
+            component = str(args.get("component") or "").strip()
+            action = str(args.get("action") or "").strip()
+            if not component or not action:
+                return {"ok": False, "error": "start_job needs component and action"}
+            payload = {"component": component, "action": action, "title": str(args.get("title") or ""), "params": args.get("params") or {}}
+            return await _request("jobs", "POST", "/api/jobs", payload)
+        if name == "generate_image":
+            prompt = str(args.get("prompt") or "").strip()
+            if not prompt:
+                return {"ok": False, "error": "prompt is required"}
+            body = {key: args[key] for key in ("provider", "model", "width", "height", "negative_prompt", "steps", "guidance", "seed", "batch_count", "output_format", "title") if key in args}
+            body["prompt"] = prompt
+            return await _request("images", "POST", "/api/images/generate", body)
+        if name == "translate_text":
+            text = str(args.get("text") or args.get("source_text") or args.get("content") or "").strip()
+            if not text:
+                return {"ok": False, "error": "text is required"}
+            body = {key: args[key] for key in ("source_language", "target_language", "model", "num_beams", "max_length", "temperature") if key in args}
+            body["text"] = text
+            return await _request("translation", "POST", "/api/translate/translate", body, timeout=300.0)
+        if name == "summarize_text":
+            text = str(args.get("text") or args.get("content") or "").strip()
+            if not text:
+                return {"ok": False, "error": "text is required"}
+            body = {key: args[key] for key in ("length", "language", "source_language", "model", "max_tokens", "min_tokens") if key in args}
+            body["text"] = text
+            return await _request("summary", "POST", "/api/summary/summarize", body, timeout=300.0)
+        if name == "synthesize_speech":
+            text = str(args.get("text") or "").strip()
+            if not text:
+                return {"ok": False, "error": "text is required"}
+            body = {key: value for key, value in args.items() if key != "text"}
+            body["text"] = text
+            return await _request("voice", "POST", "/api/voice/tts", body)
+        if name == "transcribe_audio":
+            audio_path = str(args.get("audio_path") or "").strip()
+            if not audio_path:
+                return {"ok": False, "error": "audio_path is required"}
+            body = {key: value for key, value in args.items() if key != "audio_path"}
+            body["audio_path"] = audio_path
+            return await _request("srt", "POST", "/api/srt/transcribe", body)
+        if name == "music_generate":
+            return await _music_generate(args)
         return {"ok": False, "error": f"Unknown agent tool '{name}'"}
     except Exception as exc:  # noqa: BLE001
         log.exception("Agent tool %s failed", name)

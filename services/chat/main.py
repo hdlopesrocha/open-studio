@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -19,7 +20,7 @@ from pydantic import BaseModel, Field
 from openstudio_common import INTERNAL_TOKEN, STATE_ROOT, create_service_app, env, service_url, utc_now
 
 from .context import APP_CONTEXT
-from .tools import TOOL_GUIDE, attachment_context, execute_tool
+from .tools import TOOL_GUIDE, TOOL_NAMES, attachment_context, execute_tool
 
 log = logging.getLogger("chat")
 
@@ -33,6 +34,11 @@ DEFAULT_SYSTEM_PROMPT = env(
 ).strip() + "\n\n" + APP_CONTEXT
 CONTEXT_MESSAGES = int(env("CHAT_CONTEXT_MESSAGES", "40"))
 CONTEXT_CHARS = int(env("CHAT_CONTEXT_CHARS", "24000"))
+AGENT_STEPS = int(env("CHAT_AGENT_STEPS", "4"))
+AGENT_TOOL_CALLS = int(env("CHAT_AGENT_TOOL_CALLS", "8"))
+AGENT_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TIMEOUT_SECONDS", "120"))
+AGENT_LLM_TIMEOUT_SECONDS = float(env("CHAT_AGENT_LLM_TIMEOUT_SECONDS", "45"))
+AGENT_TOOL_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TOOL_TIMEOUT_SECONDS", "90"))
 DB_PATH = Path(env("CHAT_DB_PATH", str(STATE_ROOT / "chat.db")))
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -249,7 +255,7 @@ async def _llm_models() -> dict[str, Any]:
         return {"items": [], "default": DEFAULT_MODEL, "reachable": False, "error": str(exc)}
 
 
-async def _request_llm(messages: list[dict[str, Any]], model: str, *, temperature: float = 0.7, max_tokens: int = 2048) -> dict[str, Any]:
+async def _request_llm(messages: list[dict[str, Any]], model: str, *, temperature: float = 0.7, max_tokens: int = 2048, json_mode: bool = False) -> dict[str, Any]:
     body = {
         "model": model,
         "messages": messages,
@@ -257,9 +263,14 @@ async def _request_llm(messages: list[dict[str, Any]], model: str, *, temperatur
         "max_tokens": max_tokens,
         "stream": False,
     }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=30.0), headers=_headers()) as client:
             response = await client.post(f"{LLM_URL}/api/llm/chat", json=body)
+            if json_mode and response.status_code == 400:
+                body.pop("response_format", None)
+                response = await client.post(f"{LLM_URL}/api/llm/chat", json=body)
     except httpx.TimeoutException as exc:
         raise HTTPException(status_code=504, detail="The local model timed out. Try a shorter prompt or a smaller model.") from exc
     except httpx.HTTPError as exc:
@@ -336,15 +347,18 @@ MODEL_ALIASES = {
     "qvac": "qvac-sd21", "sd turbo": "image-sd-turbo", "sdxl": "image-sdxl",
 }
 
-ACTION_WORDS = re.compile(r"\b(create|generate|make|render|translate|summarize|summarise|transcribe|convert|extract|download|mix|run|install|enable|disable|restart|build|open|go to|take me|navigate|diagnose|fix|error|broken|failed|logs?)\b", re.I)
+ACTION_WORDS = re.compile(r"\b(create|generate|make|render|translate|summarize|summarise|transcribe|convert|extract|download|upload|mix|run|start|stop|install|enable|disable|restart|build|open|go to|take me|navigate|diagnose|fix|repair|error|broken|failed|logs?|check|list|find|search|inspect|review|read|show|status|progress|delete|rename|move|copy|save|write|edit|update)\b", re.I)
+STATUS_TERMS = re.compile(r"\b(status|progress|queue|jobs?|services?|models?|files?|installed|available|logs?|latest|last|offline|online|failed)\b", re.I)
 
 
 def _deterministic_actions(message: str) -> list[dict[str, Any]]:
     text = message.lower().strip()
     actions: list[dict[str, Any]] = []
-    if re.search(r"\b(go to|open|take me to|navigate to|show me)\b", text):
+    nav = re.search(r"\b(?:go to|open|take me to|navigate to|show me(?:\s+the)?)\s+(.+)$", text)
+    if nav:
+        target = re.sub(r"^the\s+", "", nav.group(1).strip())
         for label, path in sorted(DETERMINISTIC_ROUTES.items(), key=lambda item: len(item[0]), reverse=True):
-            if label in text:
+            if target.startswith(label) or label in target:
                 actions.append({"tool": "navigate", "args": {"path": path}})
                 break
     service_action = re.search(r"\b(enable|disable|restart|build|turn on|turn off|start|stop)\s+(?:the\s+)?([a-z0-9 -]+)", text)
@@ -372,79 +386,502 @@ def _deterministic_actions(message: str) -> list[dict[str, Any]]:
     return actions
 
 
-async def _llm_plan(session: dict[str, Any], message: str, attachments: list[str], model: str) -> list[dict[str, Any]]:
-    if not ACTION_WORDS.search(message):
+QUERY_INTENT = re.compile(r"\b(check|list|inspect|report|show|status|which|what|use tools|inspect|review|tell me)\b", re.I)
+
+
+def _query_actions(message: str) -> list[dict[str, Any]]:
+    text = message.lower()
+    if not QUERY_INTENT.search(text):
         return []
-    context = attachment_context(attachments)
-    prompt = (
-        "You are the Open Studio action planner. Decide whether the user is asking you to perform an operation. "
-        "Return a JSON object only, with an actions array. If no operation is needed, return {\"actions\":[]}. "
-        "Use only the tools below and do not invent API paths.\n\n" + TOOL_GUIDE +
-        "\nUseful REST examples: POST /api/images/generate {provider,prompt,width,height}; "
-        "POST /api/translate/translate {text,source_language,target_language}; "
-        "POST /api/summary/summarize {text,length,language}; POST /api/voice/tts {text,engine,voice}; "
-        "POST /api/srt/align {audio_path,lyrics}; POST /api/ffmpeg/run {operation,input_path,options}; "
-        "POST /api/jobs {component,action,title,params}. "
-        "Never disable core services or delete files.\n\n"
-        f"User request:\n{message}\n\n{context}"
+    actions: list[dict[str, Any]] = []
+    if re.search(r"\bservices?\b|\bonline\b|\boffline\b|\brunning\b", text):
+        actions.append({"tool": "list_services", "args": {}})
+    if re.search(r"\bjobs?\b|\bqueue\b|\bfailed\b", text):
+        actions.append({"tool": "list_jobs", "args": {"status": "failed" if "failed" in text else ""}})
+    if re.search(r"\bmodels?\b|\binstalled\b", text):
+        actions.append({"tool": "list_models", "args": {}})
+    if re.search(r"\bfiles?\b|\bstorage\b", text):
+        actions.append({"tool": "list_files", "args": {"path": ""}})
+    return actions
+
+
+def _explicit_tool_actions(message: str) -> list[dict[str, Any]]:
+    text = message.lower()
+    actions: list[dict[str, Any]] = []
+    if re.search(r"\bapi[\s_-]?catalog\b", text):
+        service = ""
+        for alias, name in sorted(SERVICE_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+            if alias in text:
+                service = name
+                break
+        actions.append({"tool": "api_catalog", "args": {"service": service}})
+    return actions
+
+
+INFORMATIONAL = re.compile(
+    r"^\s*(how|what|why|where|when|which|who|explain|describe|tell me|walk me through|guide me|show me how|can you explain|do i|does|is there|are there)\b",
+    re.I,
+)
+AGENT_OVERRIDE = re.compile(r"\b(use (the )?(tools?|api)|using the api|for me|do it|actually|perform|execute|now)\b|^\s*/(agent|tools)\b", re.I)
+FAILURE_TERMS = re.compile(r"\b(wrong|not working|offline|failing|failed|broken|error|diagnose|fix|repair)\b", re.I)
+PLAIN_FINAL = re.compile(r"^\s*(?:final|answer)\s*:\s*", re.I)
+
+
+def _should_use_agent(message: str, attachments: list[str]) -> bool:
+    text = message.strip()
+    if text.startswith(("/agent", "/tools")):
+        return True
+    if _explicit_tool_actions(text):
+        return True
+    if not ACTION_WORDS.search(text) and not STATUS_TERMS.search(text):
+        return False
+    if FAILURE_TERMS.search(text) or STATUS_TERMS.search(text) or AGENT_OVERRIDE.search(text):
+        return True
+    if attachments:
+        return True
+    if INFORMATIONAL.match(text):
+        return False
+    return True
+
+
+def _navigation_requested(message: str) -> bool:
+    match = re.search(r"\b(?:go to|open|take me to|navigate to|show me(?:\s+the)?)\s+(.+)$", message, re.I)
+    if not match:
+        return False
+    target = re.sub(r"^the\s+", "", match.group(1).strip().lower())
+    return any(target.startswith(label) or label in target for label in DETERMINISTIC_ROUTES)
+
+
+def _parse_agent_decision(raw: str) -> dict[str, Any] | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    payload: Any = None
+    first = text.find("{")
+    if first >= 0:
+        candidates = [text[first:]]
+        last = text.rfind("}")
+        if last > first:
+            candidates.append(text[first:last + 1])
+        decoder = json.JSONDecoder()
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate)
+                break
+            except (ValueError, TypeError, json.JSONDecodeError):
+                try:
+                    payload, _ = decoder.raw_decode(candidate)
+                    break
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    continue
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, TypeError, json.JSONDecodeError):
+            payload = None
+    if not isinstance(payload, dict):
+        if PLAIN_FINAL.match(text):
+            return {"actions": [], "final": PLAIN_FINAL.sub("", text, count=1).strip()}
+        return None
+    raw_actions = payload.get("actions")
+    if raw_actions is None:
+        raw_actions = payload.get("tool_calls")
+    if raw_actions is None and payload.get("tool"):
+        raw_actions = [payload]
+    if not isinstance(raw_actions, list):
+        raw_actions = []
+    actions: list[dict[str, Any]] = []
+    for item in raw_actions[:4]:
+        if not isinstance(item, dict):
+            continue
+        tool = str(item.get("tool") or item.get("name") or "").strip()
+        if tool not in TOOL_NAMES:
+            continue
+        args = item.get("args") or item.get("arguments") or {}
+        actions.append({"tool": tool, "args": args if isinstance(args, dict) else {}})
+    final = payload.get("final") or payload.get("answer") or payload.get("response")
+    if isinstance(final, str) and final.strip().lower() not in {"", "null", "none"}:
+        final = final.strip()
+    else:
+        final = None
+    thought = payload.get("thought") or payload.get("reasoning") or ""
+    return {"thought": str(thought)[:800], "actions": actions, "final": final}
+
+
+LANGUAGE_CODES = {
+    "portuguese": "pt", "português": "pt", "english": "en", "inglês": "en",
+    "spanish": "es", "espanhol": "es", "french": "fr", "francês": "fr",
+    "german": "de", "alemão": "de", "italian": "it", "italiano": "it",
+    "dutch": "nl", "japanese": "ja", "japonês": "ja", "chinese": "zh",
+    "korean": "ko", "russian": "ru", "arabic": "ar", "hindi": "hi",
+}
+
+
+def _task_text(message: str) -> str:
+    if ":" in message:
+        candidate = message.split(":", 1)[1].strip()
+        if candidate:
+            return candidate
+    quoted = re.search(r"[\"'“”](.+?)[\"'“”]", message, re.S)
+    if quoted:
+        return quoted.group(1).strip()
+    return message.strip()
+
+
+def _image_prompt(message: str) -> str:
+    prompt = _task_text(message)
+    if prompt != message.strip():
+        return prompt
+    cleaned = re.sub(
+        r"^\s*(?:please\s+)?(?:generate|create|make)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|art(?:work)?)\s*(?:of|showing|with)?\s*",
+        "",
+        message,
+        flags=re.I,
     )
-    result = await _request_llm(
-        [{"role": "system", "content": APP_CONTEXT + "\n\n" + prompt}, {"role": "user", "content": message}],
-        model,
-        temperature=0.1,
-        max_tokens=1000,
-    )
-    raw = result["content"].strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
+    return cleaned.strip() or message.strip()
+
+
+def _prepare_action(action: dict[str, Any], message: str) -> dict[str, Any]:
+    prepared = {"tool": action.get("tool"), "args": dict(action.get("args") or {})}
+    tool = prepared["tool"]
+    args = prepared["args"]
+    if tool in {"translate_text", "summarize_text"} and not str(args.get("text") or args.get("source_text") or args.get("content") or "").strip():
+        args["text"] = _task_text(message)
+    if tool == "translate_text":
+        target = str(args.get("target_language") or "").strip()
+        match = re.search(r"\b(?:to|into)\s+([a-zA-ZÀ-ÿ-]+)", message, re.I)
+        if (not target or target.lower() == "auto") and match:
+            word = match.group(1).lower()
+            args["target_language"] = LANGUAGE_CODES.get(word, match.group(1))
+    return prepared
+
+
+def _action_allowed(action: dict[str, Any], message: str, attachments: list[str]) -> bool:
+    tool = str(action.get("tool") or "")
+    if tool == "navigate" and not _navigation_requested(message):
+        return False
+    if tool in {"read_file", "write_file", "list_files"} and not attachments:
+        if not re.search(r"\b(files?|path|save|write|read|storage|document)\b", message, re.I):
+            return False
+    return True
+
+
+def _compact_results(results: list[dict[str, Any]], limit: int = 9000) -> str:
+    text = json.dumps(results, ensure_ascii=False)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n... tool output truncated; rely on the visible fields and call another tool if needed."
+
+
+def _job_from_result(data: Any) -> dict[str, Any]:
+    if isinstance(data, dict):
+        if isinstance(data.get("job"), dict):
+            return data["job"]
+        if data.get("id") and (data.get("status") or data.get("component")):
+            return data
+    return {}
+
+
+def _tool_summary(results: list[dict[str, Any]]) -> str:
+    successful = {str(item.get("tool")) for item in results if item.get("ok")}
+    visible = [item for item in results if item.get("ok") or str(item.get("tool")) not in successful]
+    lines: list[str] = []
+    for item in visible:
+        tool = str(item.get("tool") or "tool")
+        if not item.get("ok"):
+            lines.append(f"{tool}: failed — {item.get('error') or 'unknown error'}")
+            continue
+        data = item.get("data")
+        args = item.get("args") if isinstance(item.get("args"), dict) else {}
+        if tool == "list_services" and isinstance(data, dict):
+            items = data.get("items") or []
+            online = [str(entry.get("name")) for entry in items if entry.get("running") or entry.get("online")]
+            offline = [str(entry.get("name")) for entry in items if entry.get("enabled") and not (entry.get("running") or entry.get("online"))]
+            disabled = [str(entry.get("name")) for entry in items if not entry.get("enabled")]
+            lines.append(f"Services checked: {data.get('total', len(items))} total, {len(online)} online, {len(offline)} offline.")
+            lines.append("Offline: " + (", ".join(offline) if offline else "none") + ".")
+            if disabled:
+                lines.append("Disabled: " + ", ".join(disabled) + ".")
+        elif tool == "list_models" and isinstance(data, dict):
+            items = data.get("items") or []
+            installed = sum(1 for entry in items if entry.get("installed"))
+            missing = [str(entry.get("id")) for entry in items if not entry.get("installed")]
+            lines.append(f"Models checked: {installed} installed of {data.get('total', len(items))}.")
+            if missing:
+                lines.append("Missing: " + ", ".join(missing) + ".")
+        elif tool in {"list_jobs", "job_action", "get_job", "wait_for_job"}:
+            job = _job_from_result(data)
+            if job:
+                message = str(job.get("message") or "").strip()
+                lines.append(f"Job {job.get('id')}: {job.get('status')} · {job.get('progress') or 0}%{(' · ' + message) if message else ''}.")
+                if job.get("error"):
+                    lines.append(f"Error: {job['error']}")
+            else:
+                jobs = data.get("items") if isinstance(data, dict) else []
+                if jobs:
+                    lines.append("Jobs: " + ", ".join(f"{job.get('id')} {job.get('status')}" for job in jobs[:12]) + ".")
+                else:
+                    lines.append(f"{tool}: completed.")
+        elif tool in {"generate_image", "transcribe_audio", "synthesize_speech", "music_generate", "start_job", "model_install", "recheck_model"}:
+            job = _job_from_result(data)
+            if job:
+                lines.append(f"{tool}: job {job.get('id')} is {job.get('status')}.")
+            elif isinstance(data, dict) and isinstance(data.get("job"), dict):
+                job = data["job"]
+                lines.append(f"{tool}: job {job.get('id')} is {job.get('status')}.")
+            else:
+                lines.append(f"{tool}: submitted.")
+        elif tool == "translate_text" and isinstance(data, dict):
+            lines.append("Translation: " + str(data.get("translated_text") or "")[:1200])
+        elif tool == "summarize_text" and isinstance(data, dict):
+            lines.append("Summary: " + str(data.get("summary") or data.get("text") or "")[:1200])
+        elif tool == "diagnose" and isinstance(data, dict):
+            offline = data.get("offline_services") or []
+            lines.append("Diagnostics: offline services: " + (", ".join(map(str, offline)) if offline else "none") + ".")
+            failed = data.get("failed_jobs") or {}
+            job_items = failed.get("items") if isinstance(failed, dict) else []
+            if job_items:
+                lines.append(f"Failed jobs: {len(job_items)} (latest: {job_items[0].get('id')} {job_items[0].get('title')}).")
+        elif tool == "service_action" and isinstance(data, dict):
+            lines.append(f"Service action {args.get('name') or ''} {args.get('action') or ''}: completed.".strip())
+        elif tool == "service_logs" and isinstance(data, dict):
+            raw_lines = str(data.get("lines") or "").splitlines()
+            lines.append(f"Logs: {len(raw_lines)} lines" + (f"; last line: {raw_lines[-1][:240]}" if raw_lines else "."))
+        elif tool in {"read_file", "write_file"} and isinstance(data, dict):
+            content = data.get("content")
+            if content:
+                lines.append(f"File {data.get('path') or ''}: {str(content)[:1200]}")
+            else:
+                lines.append(f"File {data.get('path') or data.get('name') or ''}: {tool.split('_')[0]} completed.")
+        elif tool == "navigate" and isinstance(data, dict):
+            lines.append(f"Navigation: {data.get('label') or data.get('path')}.")
+        elif tool == "opencode_prompt" and isinstance(data, dict):
+            prompt = str(data.get("prompt") or "")
+            lines.append("OpenCode prompt prepared." + (f"\n{prompt[:2000]}" if prompt else ""))
+        elif tool == "api_catalog" and isinstance(data, dict):
+            endpoints = data.get("endpoints") or []
+            lines.append(f"API catalog: {data.get('total', len(endpoints))} endpoints for {data.get('service') or 'services'}.")
+            for endpoint in endpoints[:24]:
+                lines.append(f"- {endpoint.get('method')} {endpoint.get('path')} — {endpoint.get('summary') or ''}".rstrip(" —"))
+        elif tool == "list_files" and isinstance(data, dict):
+            entries = data.get("items") or data.get("entries") or []
+            lines.append("Files: " + (", ".join(str(entry.get("path") or entry.get("name")) for entry in entries[:20]) if entries else "none") + ".")
+        elif tool == "api_request" and isinstance(data, dict):
+            lines.append(f"API request completed: {json.dumps(data, ensure_ascii=False)[:1600]}")
+        elif tool == "opencode_prompt":
+            lines.append("OpenCode prompt prepared.")
+        elif isinstance(data, dict) and data.get("translated_text"):
+            lines.append("Translation: " + str(data["translated_text"])[:1200])
+        elif isinstance(data, dict) and data.get("summary"):
+            lines.append("Summary: " + str(data["summary"])[:1200])
+        else:
+            lines.append(f"{tool}: completed.")
+    return "\n".join(dict.fromkeys(line for line in lines if line))
+
+
+def _grounding_tokens(results: list[dict[str, Any]]) -> set[str]:
+    tokens: set[str] = set()
+    for item in results:
+        data = item.get("data")
+        tool = item.get("tool")
+        args = item.get("args") if isinstance(item.get("args"), dict) else {}
+        if tool == "list_services" and isinstance(data, dict):
+            tokens.update(str(entry.get("name")) for entry in data.get("items") or [])
+            tokens.update({"service", "services", "online", "offline", "disabled"})
+        elif tool == "list_models" and isinstance(data, dict):
+            tokens.update(str(entry.get("id")) for entry in data.get("items") or [])
+            tokens.update({"model", "models", "installed", "missing"})
+        elif tool == "service_action":
+            tokens.update({str(args.get("name") or ""), str(args.get("action") or ""), "service"})
+        elif isinstance(data, dict):
+            job = _job_from_result(data)
+            if job:
+                tokens.update({str(job.get("id") or ""), str(job.get("status") or ""), "job"})
+            if data.get("translated_text"):
+                tokens.add("translation")
+            if data.get("summary"):
+                tokens.add("summary")
+    tokens.update({"id", "status", "queued", "running", "completed", "failed", "started"})
+    return {token.lower() for token in tokens if token}
+
+
+READ_ONLY_TOOLS = {"list_services", "list_models", "list_jobs", "get_job", "wait_for_job", "service_logs", "diagnose", "api_catalog", "read_file", "list_files", "navigate"}
+DIRECT_RESULT_TOOLS = READ_ONLY_TOOLS | {"translate_text", "summarize_text", "generate_image", "transcribe_audio", "synthesize_speech", "music_generate", "start_job", "service_action", "model_install", "recheck_model"}
+FAST_RESULT_TOOLS = {"navigate", "list_services", "list_models", "list_jobs", "list_files", "read_file", "translate_text", "summarize_text", "generate_image", "music_generate", "service_action", "model_install", "recheck_model", "api_catalog", "get_job", "wait_for_job", "service_logs", "opencode_prompt"}
+
+
+def _grounded_answer(text: str | None, results: list[dict[str, Any]]) -> str:
+    summary = _tool_summary(results)
+    if results and all(str(item.get("tool") or "") in DIRECT_RESULT_TOOLS for item in results):
+        return summary
+    if any(not item.get("ok") for item in results):
+        return summary
+    if not text:
+        return summary
+    cleaned = text.strip()
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict) and isinstance(parsed.get("final"), str):
+                cleaned = parsed["final"].strip()
+        except (ValueError, TypeError, json.JSONDecodeError):
+            pass
+    if not cleaned or cleaned.startswith("{"):
+        return summary
+    tokens = _grounding_tokens(results)
+    lowered = cleaned.lower()
+    if tokens and not any(token in lowered for token in tokens):
+        return summary
+    if summary and summary not in cleaned:
+        return cleaned + "\n\nVerified results: " + summary
+    return cleaned
+
+
+async def _execute_agent_tool(action: dict[str, Any]) -> dict[str, Any]:
     try:
-        start = raw.find("{")
-        end = raw.rfind("}")
-        payload = json.loads(raw[start:end + 1])
-        actions = payload.get("actions") if isinstance(payload, dict) else []
-        if not isinstance(actions, list):
-            return []
-        allowed = {"navigate", "list_services", "service_action", "service_logs", "list_models", "model_install", "recheck_model", "list_jobs", "job_action", "list_files", "read_file", "write_file", "api_request", "diagnose", "opencode_prompt"}
-        return [
-            {"tool": str(item.get("tool")), "args": item.get("args") if isinstance(item.get("args"), dict) else {}}
-            for item in actions[:4]
-            if isinstance(item, dict) and str(item.get("tool")) in allowed
-        ]
-    except (ValueError, TypeError, json.JSONDecodeError):
-        return []
+        return await asyncio.wait_for(execute_tool(action["tool"], action.get("args") or {}), timeout=AGENT_TOOL_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": f"{action['tool']} timed out after {int(AGENT_TOOL_TIMEOUT_SECONDS)}s"}
+
+
+async def _final_answer(messages: list[dict[str, Any]], model: str, results: list[dict[str, Any]], message: str = "") -> str:
+    if not results:
+        return ""
+    summary = _tool_summary(results)
+    try:
+        raw = (await asyncio.wait_for(_request_llm(
+            [
+                {
+                    "role": "system",
+                    "content": "You are Open Studio's execution assistant. Answer only from the verified tool results. Do not call tools, invent statuses or mention unrelated tasks. Be concise and factual.",
+                },
+                {
+                    "role": "user",
+                    "content": f"User request: {message or 'Complete the requested task.'}\n\nVerified tool results:\n{summary}\n\nWrite the final answer. Include relevant ids, paths, status and the next step if anything remains.",
+                },
+            ],
+            model,
+            temperature=0.1,
+            max_tokens=500,
+        ), timeout=AGENT_LLM_TIMEOUT_SECONDS))["content"]
+        parsed = _parse_agent_decision(raw)
+        if parsed and parsed.get("final"):
+            raw = str(parsed["final"])
+        return _grounded_answer(raw, results)
+    except (HTTPException, asyncio.TimeoutError):
+        return summary
 
 
 async def _run_agent(session: dict[str, Any], message: str, attachments: list[str], model: str) -> tuple[list[dict[str, Any]], str | None]:
-    actions = _deterministic_actions(message)
-    if not actions:
-        try:
-            actions = await _llm_plan(session, message, attachments, model)
-        except HTTPException:
-            # A planner failure must not turn an ordinary chat question into an
-            # API failure; the normal model answer can still succeed.
-            actions = []
+    initial_actions = _deterministic_actions(message)
+    if _should_use_agent(message, attachments):
+        if (
+            not attachments
+            and re.search(r"\btranslate\b", message, re.I)
+            and not re.match(r"^\s*(how|what|why|explain|tell me)", message, re.I)
+            and (":" in message or re.search(r"[\"'“”]", message))
+        ):
+            initial_actions.append({"tool": "translate_text", "args": {"text": _task_text(message)}})
+        if not attachments and re.search(r"\b(generate|create|make)\b.*\b(image|picture|artwork|art)\b", message, re.I) and not re.match(r"^\s*(how|what|why|explain|tell me)", message, re.I):
+            initial_actions.append({"tool": "generate_image", "args": {"prompt": _image_prompt(message), "provider": "auto"}})
+        if not attachments and re.search(r"\bsummar(?:y|ize|ise)\b", message, re.I) and (":" in message or re.search(r"[\"'“”]", message)) and not re.match(r"^\s*(how|what|why|explain|tell me)", message, re.I):
+            initial_actions.append({"tool": "summarize_text", "args": {"text": _task_text(message)}})
+        if not attachments and re.search(r"\b(create|make|generate|compose)\b.*\b(song|track|music)\b", message, re.I) and not re.match(r"^\s*(how|what|why|explain|tell me)", message, re.I):
+            title_match = re.search(r"(?:called|named|titled)\s+[\"'“”]?(.+?)[\"'“”]?(?:[.,]|$)", message, re.I)
+            initial_actions.append({"tool": "music_generate", "args": {"title": title_match.group(1).strip() if title_match else "Open Studio song", "caption": _task_text(message)}})
+        seen = {(item.get("tool"), json.dumps(item.get("args") or {}, sort_keys=True)) for item in initial_actions}
+        for action in [*_query_actions(message), *_explicit_tool_actions(message)]:
+            signature = (action.get("tool"), json.dumps(action.get("args") or {}, sort_keys=True))
+            if signature not in seen:
+                initial_actions.append(action)
+                seen.add(signature)
+    if not initial_actions and not _should_use_agent(message, attachments):
+        return [], None
     results: list[dict[str, Any]] = []
-    for action in actions[:4]:
-        result = await execute_tool(action["tool"], action.get("args") or {})
+    tool_calls = 0
+    initial_actions = [_prepare_action(action, message) for action in initial_actions if _action_allowed(action, message, attachments)]
+    for action in initial_actions[:8]:
+        if tool_calls >= AGENT_TOOL_CALLS:
+            break
+        result = await _execute_agent_tool(action)
         results.append({"tool": action["tool"], "args": action.get("args") or {}, **result})
+        tool_calls += 1
+    if initial_actions and results and all(str(action.get("tool") or "") in FAST_RESULT_TOOLS for action in initial_actions):
+        return results, _tool_summary(results)
+    protocol = (
+        "You are an execution agent. Work step by step. On each turn return ONLY a JSON object. "
+        "To use tools: {\"thought\":\"brief reasoning\",\"actions\":[{\"tool\":\"tool_name\",\"args\":{}}],\"final\":null}. "
+        "When the task is complete, or after you have enough information: "
+        "{\"thought\":\"brief reasoning\",\"actions\":[],\"final\":\"answer for the user\"}. "
+        "Use the results of each tool call to decide what to do next. Do not return a final answer while more tool calls are needed. "
+        "Do not make up tool results. For a read-only status/check task, call the relevant tool and then answer from its data; do not move to an unrelated workspace. "
+        "Only use navigate when the user explicitly asks to open or go to a page. Only use write_file when the user explicitly asks to save or write a file."
+    )
+    history = STORE.list_messages(str(session.get("id") or ""))
+    prior = history[:-1] if history and history[-1].get("role") == "user" else history
+    messages = _context(session, prior)
+    if messages and messages[0].get("role") == "system":
+        system_content = str(messages[0].get("content") or "")
+        if "OPEN STUDIO OVERVIEW" not in system_content:
+            system_content += "\n\n" + APP_CONTEXT
+        messages[0]["content"] = system_content + "\n\n" + TOOL_GUIDE + "\n\n" + protocol
+    else:
+        messages.insert(0, {"role": "system", "content": APP_CONTEXT + "\n\n" + TOOL_GUIDE + "\n\n" + protocol})
+    messages.append({"role": "user", "content": message + ("\n\n" + attachment_context(attachments) if attachments else "")})
+    if initial_actions and results:
+        messages.append({"role": "assistant", "content": json.dumps({"thought": "Initial deterministic actions", "actions": initial_actions, "final": None})})
+        messages.append({"role": "user", "content": "TOOL RESULTS (initial):\n" + _compact_results(results)})
+    final_text: str | None = None
+    deadline = time.monotonic() + AGENT_TIMEOUT_SECONDS
+    for _ in range(max(1, AGENT_STEPS)):
+        if tool_calls >= AGENT_TOOL_CALLS or time.monotonic() >= deadline:
+            break
+        remaining = max(5.0, min(AGENT_LLM_TIMEOUT_SECONDS, deadline - time.monotonic()))
+        try:
+            raw = (await asyncio.wait_for(_request_llm(messages, model, temperature=0.1, max_tokens=900, json_mode=True), timeout=remaining))["content"]
+        except (HTTPException, asyncio.TimeoutError):
+            if results:
+                return results, _tool_summary(results)
+            return [], None
+        decision = _parse_agent_decision(raw)
+        log.info("Agent step decision: actions=%s final=%s", [item.get("tool") for item in (decision or {}).get("actions", [])], bool((decision or {}).get("final")))
+        if decision is None:
+            log.warning("Agent decision was not valid JSON: %s", raw[:1600])
+            if results:
+                return results, await _final_answer(messages, model, results, message)
+            return [], None
+        actions = [action for action in (decision.get("actions") or []) if _action_allowed(action, message, attachments)]
+        actions = [_prepare_action(action, message) for action in actions]
+        if not actions:
+            final_text = decision.get("final")
+            if final_text:
+                return results, _grounded_answer(final_text, results)
+            if results:
+                break
+            return [], None
+        messages.append({"role": "assistant", "content": json.dumps(decision, ensure_ascii=False)})
+        step_results: list[dict[str, Any]] = []
+        for action in actions:
+            if tool_calls >= AGENT_TOOL_CALLS:
+                break
+            result = await _execute_agent_tool(action)
+            step_results.append({"tool": action["tool"], "args": action.get("args") or {}, **result})
+            tool_calls += 1
+        if step_results:
+            results.extend(step_results)
+            messages.append({"role": "user", "content": "TOOL RESULTS:\n" + _compact_results(step_results)})
+        if not step_results:
+            if results:
+                break
+            return [], None
     if not results:
         return [], None
-    summary = json.dumps(results, ensure_ascii=False)[:9000]
-    try:
-        answer = await _request_llm(
-            [
-                {"role": "system", "content": APP_CONTEXT},
-                {"role": "user", "content": f"User request: {message}\n\nAgent tool results:\n{summary}\n\nExplain what was done, what failed, and give the next exact step. Mention links returned by navigate tools."},
-            ],
-            model,
-            temperature=0.2,
-            max_tokens=1200,
-        )
-        text = answer["content"]
-    except HTTPException:
-        text = "Agent actions completed.\n" + "\n".join(f"- {item['tool']}: {'ok' if item.get('ok') else item.get('error', 'failed')}" for item in results)
-    return results, text
+    if final_text:
+        return results, _grounded_answer(final_text, results)
+    return results, await _final_answer(messages, model, results, message)
 
 
 @router.get("/context")
