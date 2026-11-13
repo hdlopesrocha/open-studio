@@ -21,6 +21,7 @@ import {
   FolderOpen,
   Image as ImageIcon,
   Layers,
+  Loader2,
   Music2,
   Palette,
   Pause,
@@ -29,6 +30,7 @@ import {
   RefreshCw,
   Save,
   Sparkles,
+  Trash2,
   Upload,
   Wand2,
   X as XIcon,
@@ -975,6 +977,14 @@ watch(
 const refreshing = ref(false);
 
 const newProjectOpen = ref(false);
+const deleteTarget = ref<VideoProject | null>(null);
+const deletingProject = ref(false);
+const deleteOpen = computed({
+  get: () => Boolean(deleteTarget.value),
+  set: (value: boolean) => {
+    if (!value && !deletingProject.value) deleteTarget.value = null;
+  },
+});
 const creating = ref(false);
 const audioPickerOpen = ref(false);
 const srtPickerOpen = ref(false);
@@ -2300,6 +2310,35 @@ function openNewProject(): void {
   newProjectOpen.value = true;
 }
 
+function askDeleteProject(project: VideoProject): void {
+  deleteTarget.value = project;
+}
+
+async function confirmDeleteProject(): Promise<void> {
+  const project = deleteTarget.value;
+  if (!project || deletingProject.value) return;
+  deletingProject.value = true;
+  try {
+    if (!DEMO) await api.delete(`/video/projects/${project.id}`);
+    projects.value = projects.value.filter((item) => item.id !== project.id);
+    if (currentProject.value?.id === project.id) {
+      currentProject.value = null;
+      scenes.value = [];
+      subtitleLines.value = [];
+      videoAssets.value = [];
+      selectedSceneId.value = null;
+      if (projects.value[0]) await openProject(projects.value[0].id, false);
+      else tab.value = "projects";
+    }
+    deleteTarget.value = null;
+    toasts.success(`${project.title || project.name} deleted`);
+  } catch (error: any) {
+    toasts.error(error?.message || "Could not delete the video project");
+  } finally {
+    deletingProject.value = false;
+  }
+}
+
 function applySubtitlePreset(presetId: string): void {
   const preset = SUBTITLE_PRESETS.find((item) => item.id === presetId);
   if (!preset) return;
@@ -2749,7 +2788,17 @@ onBeforeUnmount(() => {
                 <div class="progress thin"><span :style="{ width: `${projectProgress(project)}%` }" /></div>
                 <div class="row-between">
                   <span class="small muted">{{ currentStyleNameFor(project) }} · {{ project.config.scenes.image_provider }}</span>
-                  <span class="video-project-open">Open editor <ChevronRight :size="13" /></span>
+                  <span class="row" style="gap: 4px">
+                    <button
+                      class="icon-btn video-project-delete"
+                      title="Delete project"
+                      :disabled="deletingProject"
+                      @click.stop="askDeleteProject(project)"
+                    >
+                      <Trash2 :size="13" />
+                    </button>
+                    <span class="video-project-open">Open editor <ChevronRight :size="13" /></span>
+                  </span>
                 </div>
               </div>
             </article>
@@ -3028,6 +3077,9 @@ onBeforeUnmount(() => {
             <div class="panel-footer video-rail-footer">
               <button class="btn btn-sm btn-ghost" @click="tab = 'projects'"><FolderOpen :size="12" /> Projects</button>
               <button class="btn btn-sm" :disabled="actionsDisabled" @click="runAction('plan', { force: true })"><Layers :size="12" /> Re-plan</button>
+              <button v-if="currentProject" class="btn btn-sm btn-danger" :disabled="actionsDisabled" title="Delete this video project" @click="askDeleteProject(currentProject)">
+                <Trash2 :size="12" /> Delete
+              </button>
             </div>
           </section>
 
@@ -3863,6 +3915,38 @@ onBeforeUnmount(() => {
     </section>
 
     <!-- ================================================================= -->
+    <!-- Delete project modal                                               -->
+    <!-- ================================================================= -->
+    <BaseModal
+      v-model="deleteOpen"
+      title="Delete video project"
+      subtitle="This removes the project folder and every generated asset inside it."
+      width="normal"
+    >
+      <div class="alert warn" style="display: flex; gap: 8px; align-items: flex-start">
+        <AlertTriangle :size="16" style="flex: 0 0 auto; margin-top: 1px" />
+        <div>
+          <strong>This cannot be undone.</strong>
+          <p style="margin-top: 4px">
+            Delete <strong>{{ deleteTarget?.title || deleteTarget?.name }}</strong> and all of its audio,
+            lyrics, scene plan, artwork, clips, renders and exports.
+          </p>
+        </div>
+      </div>
+      <p class="small muted" style="margin-top: 12px">
+        Active video jobs must be cancelled before a project can be deleted.
+      </p>
+      <template #footer>
+        <button class="btn" :disabled="deletingProject" @click="deleteTarget = null">Cancel</button>
+        <button class="btn btn-danger" :disabled="deletingProject" @click="confirmDeleteProject">
+          <Loader2 v-if="deletingProject" :size="13" class="spin" />
+          <Trash2 v-else :size="13" />
+          {{ deletingProject ? "Deleting…" : "Delete project" }}
+        </button>
+      </template>
+    </BaseModal>
+
+    <!-- ================================================================= -->
     <!-- New project modal                                                  -->
     <!-- ================================================================= -->
     <BaseModal
@@ -4518,6 +4602,8 @@ onBeforeUnmount(() => {
   color: var(--accent-2);
   white-space: nowrap;
 }
+.video-project-delete { color: var(--muted); }
+.video-project-delete:hover { color: var(--danger); }
 .video-new-project-card {
   min-height: 285px;
   display: flex;

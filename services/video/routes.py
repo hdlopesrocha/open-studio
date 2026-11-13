@@ -52,7 +52,7 @@ from pydantic import BaseModel, Field, ValidationError
 from .catalog import build_catalog
 from .cover import generate_cover
 from .jobs import JobConflict, JobNotFound
-from .runner import CentralJobError, submit_central_job
+from .runner import CentralJobError, _find_active_job, submit_central_job
 from .system import collect_status, model_inventory
 
 logger = logging.getLogger("mvstudio.video.routes")
@@ -552,11 +552,20 @@ def update_project(project_id: str, payload: ProjectUpdate, request: Request) ->
 
 
 @router.delete("/projects/{project_id}", status_code=204)
-def delete_project(project_id: str, request: Request) -> None:
+async def delete_project(project_id: str, request: Request) -> None:
     store, _ai, _client, jobs = _state(request)
     _get_project(store, project_id)
     if jobs.active_jobs(project_id):
         raise HTTPException(status_code=409, detail="Cancel the active job before deleting the project")
+    try:
+        central_active = await _find_active_job(project_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Could not verify active video jobs: {exc}") from exc
+    if central_active:
+        raise HTTPException(
+            status_code=409,
+            detail="A central video job is active for this project. Cancel it before deleting.",
+        )
     try:
         store.delete(project_id)
     except Exception as exc:  # noqa: BLE001
