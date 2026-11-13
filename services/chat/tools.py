@@ -102,7 +102,7 @@ REST API access:
 - api_catalog {"service": "music"} — list the real endpoints and methods for a service.
   Omit service to list available services.
 - api_describe {"service": "music", "path": "/api/music/projects", "method": "POST"} — inspect the request schema before building a complex body.
-- api_request {"service": "music", "method": "POST", "path": "/api/music/projects", "body": {...}} — call an endpoint directly.
+- api_request {"service": "music", "method": "POST", "path": "/api/music/projects", "body": {...}, "query": {...}} — call an endpoint directly.
   Use api_catalog/api_describe first when you do not know the exact path or body.
 
 Repair and handoff:
@@ -135,7 +135,29 @@ Tools and arguments:
 - generate_image(prompt, provider?, model?, width?, height?)
 - music_generate(title, caption, lyrics?, duration?, genre?, mood?)
 
-Use api_catalog before inventing a REST path. Use read-only tools for checks.
+Use api_catalog before inventing a REST path, then api_describe for the exact
+request schema and request_example. api_request accepts optional body and query.
+The tool supplies internal authentication; never add internal headers yourself.
+
+API cookbook:
+- Create a song: POST /api/music/projects {"title":"..."} -> POST
+  /api/music/projects/{project_id}/songs {"title":"...", "genre":"Pop",
+  "duration":120} -> POST /api/music/songs/{song_id}/generate
+  {"provider":"ace_step", "mode":"full", "caption":"...", "duration":120}.
+- Generate an image: POST /api/images/generate {"prompt":"...", "provider":"auto",
+  "width":1024, "height":1024}.
+- Translate: POST /api/translate/translate {"text":"...", "source_language":"auto",
+  "target_language":"pt"}.
+- Summarize: POST /api/summary/summarize {"text":"...", "length":"medium",
+  "language":"auto"}.
+- Speech: POST /api/voice/tts {"text":"...", "engine":"omnivoice"}.
+- Transcribe/align: POST /api/srt/transcribe {"audio_path":"..."} or
+  POST /api/srt/align {"audio_path":"...", "lyrics":"..."}.
+- Any job: POST /api/jobs {"component":"...", "action":"...", "title":"...",
+  "params":{...}}; poll GET /api/jobs/{job_id}.
+- Video: POST /api/video/projects then POST /api/video/projects/{id}/run;
+  use api_describe for the exact project config.
+
 If a tool fails, inspect the logs/repair result, retry or repair the service, then
 use opencode_prompt if code changes are needed. Only use navigate when the user
 explicitly asks to open/go to a page. Only write files when requested.
@@ -149,6 +171,123 @@ TOOL_NAMES = {
     "generate_image", "translate_text", "summarize_text", "synthesize_speech",
     "transcribe_audio", "music_generate",
 }
+
+
+API_SPEC_PATH = Path(__file__).with_name("api_spec.json")
+_API_SPEC: dict[str, Any] | None = None
+API_SERVICE_ALIASES = {
+    "images": "imagegen", "imagegen": "imagegen", "translate": "translation",
+    "translation": "translation", "summarize": "summary", "summary": "summary",
+    "subtitles": "srt", "srt": "srt", "documents": "docs", "docs": "docs",
+    "jobs": "jobs", "jobhub": "jobs",
+}
+
+
+def _api_spec() -> dict[str, Any]:
+    global _API_SPEC
+    if _API_SPEC is None:
+        try:
+            _API_SPEC = json.loads(API_SPEC_PATH.read_text())
+        except (OSError, ValueError, TypeError):
+            _API_SPEC = {"services": {}}
+    return _API_SPEC
+
+
+def _spec_service(service: str) -> tuple[str, dict[str, Any] | None]:
+    target = API_SERVICE_ALIASES.get(service, service)
+    value = (_api_spec().get("services") or {}).get(target)
+    return target, value if isinstance(value, dict) else None
+
+
+def _resolve_ref(schema: Any, components: dict[str, Any], seen: set[str] | None = None) -> Any:
+    if not isinstance(schema, dict):
+        return schema
+    ref = schema.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+        name = ref.rsplit("/", 1)[-1]
+        seen = seen or set()
+        if name in seen:
+            return {"$ref": ref}
+        seen.add(name)
+        target = components.get(name)
+        return _resolve_ref(target, components, seen) if isinstance(target, dict) else schema
+    return schema
+
+
+def _body_fields(schema: Any, components: dict[str, Any]) -> list[str]:
+    schema = _resolve_ref(schema, components)
+    if not isinstance(schema, dict):
+        return []
+    properties = schema.get("properties")
+    return sorted(str(key) for key in properties) if isinstance(properties, dict) else []
+
+
+def _body_example(schema: Any, components: dict[str, Any], *, depth: int = 0) -> Any:
+    if not isinstance(schema, dict) or depth > 4:
+        return None
+    schema = _resolve_ref(schema, components)
+    if not isinstance(schema, dict):
+        return None
+    if "example" in schema:
+        return schema["example"]
+    if "default" in schema:
+        return schema["default"]
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum:
+        return enum[0]
+    for key in ("anyOf", "oneOf", "allOf"):
+        options = schema.get(key)
+        if isinstance(options, list) and options:
+            return _body_example(options[0], components, depth=depth + 1)
+    kind = schema.get("type")
+    if kind == "object" or isinstance(schema.get("properties"), dict):
+        result: dict[str, Any] = {}
+        properties = schema.get("properties") or {}
+        required = set(schema.get("required") or [])
+        for name, prop in properties.items():
+            if name in required or len(result) < 8:
+                value = _body_example(prop, components, depth=depth + 1)
+                if value is not None:
+                    result[str(name)] = value
+        return result
+    if kind == "array":
+        item = _body_example(schema.get("items") or {}, components, depth=depth + 1)
+        return [item] if item is not None else []
+    if kind == "integer":
+        return 1
+    if kind == "number":
+        return 1.0
+    if kind == "boolean":
+        return True
+    if kind == "string":
+        fmt = schema.get("format")
+        if fmt == "date-time":
+            return "2026-01-01T00:00:00Z"
+        if fmt == "date":
+            return "2026-01-01"
+        return "string"
+    return None
+
+
+def _component_subset(schema: Any, components: dict[str, Any]) -> dict[str, Any]:
+    names: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            ref = value.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+                name = ref.rsplit("/", 1)[-1]
+                if name not in names:
+                    names.add(name)
+                    visit(components.get(name))
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(schema)
+    return {name: components[name] for name in names if name in components}
 
 
 STATIC_ENDPOINTS: dict[str, list[dict[str, str]]] = {
@@ -265,7 +404,7 @@ def _headers() -> dict[str, str]:
     return {"Content-Type": "application/json", "X-Internal-Token": INTERNAL_TOKEN, "X-Service": "chat"}
 
 
-async def _request(service: str, method: str, path: str, body: Any = None, *, timeout: float = 120.0) -> dict[str, Any]:
+async def _request(service: str, method: str, path: str, body: Any = None, *, params: dict[str, Any] | None = None, timeout: float = 120.0) -> dict[str, Any]:
     base = SERVICE_URLS.get(service)
     if not base:
         return {"ok": False, "error": f"Unknown service '{service}'. Available: {', '.join(SERVICE_URLS)}"}
@@ -275,7 +414,7 @@ async def _request(service: str, method: str, path: str, body: Any = None, *, ti
         return {"ok": False, "error": "Internal control paths are not available to the agent."}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=timeout, write=60.0, pool=30.0), headers=_headers()) as client:
-            response = await client.request(method.upper(), f"{base.rstrip('/')}{path}", json=body)
+            response = await client.request(method.upper(), f"{base.rstrip('/')}{path}", json=body, params=params)
     except httpx.HTTPError as exc:
         return {"ok": False, "error": f"{service} is unreachable: {exc}"}
     try:
@@ -286,6 +425,9 @@ async def _request(service: str, method: str, path: str, body: Any = None, *, ti
 
 
 async def _openapi(service: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    target, spec = _spec_service(service)
+    if spec:
+        return {"openapi": spec.get("openapi") or "3.1.0", "info": spec.get("info") or {}, "paths": spec.get("paths") or {}, "components": spec.get("components") or {}}, None
     base = SERVICE_URLS.get(service)
     if not base:
         return None, {"ok": False, "error": f"Unknown service '{service}'. Available: {', '.join(SERVICE_URLS)}"}
@@ -305,6 +447,7 @@ async def _openapi(service: str) -> tuple[dict[str, Any] | None, dict[str, Any] 
 async def _api_catalog(service: str = "") -> dict[str, Any]:
     if not service:
         return {"ok": True, "data": {"services": sorted(SERVICE_URLS)}}
+    target, _ = _spec_service(service)
     doc, error = await _openapi(service)
     if error:
         items = _static_catalog(service)
@@ -319,15 +462,20 @@ async def _api_catalog(service: str = "") -> dict[str, Any]:
         for method, operation in operations.items():
             if method.lower() not in {"get", "post", "put", "patch", "delete"} or not isinstance(operation, dict):
                 continue
+            body_schema = (((operation.get("requestBody") or {}).get("content") or {}).get("application/json") or {}).get("schema")
+            components = doc.get("components", {}).get("schemas", {})
             items.append({
                 "method": method.upper(),
                 "path": path,
                 "summary": str(operation.get("summary") or operation.get("operationId") or "")[:160],
+                "query": [str(param.get("name")) for param in operation.get("parameters") or [] if isinstance(param, dict) and param.get("in") == "query"],
+                "body_fields": _body_fields(body_schema, components),
             })
-    return {"ok": True, "data": {"service": service, "endpoints": items[:400], "total": len(items)}}
+    return {"ok": True, "data": {"service": target, "endpoints": items[:400], "total": len(items), "source": "built-in OpenAPI spec"}}
 
 
 async def _api_describe(service: str, path: str, method: str) -> dict[str, Any]:
+    target, _ = _spec_service(service)
     doc, error = await _openapi(service)
     if error:
         for item in _static_catalog(service):
@@ -341,16 +489,19 @@ async def _api_describe(service: str, path: str, method: str) -> dict[str, Any]:
     if not isinstance(operation, dict):
         return {"ok": False, "error": f"{method.upper()} {path} is not available in {service}."}
     body_schema = (((operation.get("requestBody") or {}).get("content") or {}).get("application/json") or {}).get("schema")
+    components = doc.get("components", {}).get("schemas", {})
     return {
         "ok": True,
         "data": {
-            "service": service,
+            "service": target,
             "method": method.upper(),
             "path": path,
             "summary": operation.get("summary") or operation.get("operationId") or "",
             "parameters": operation.get("parameters") or [],
             "request_body": body_schema,
-            "components": doc.get("components", {}).get("schemas", {}),
+            "request_example": _body_example(body_schema, components),
+            "body_fields": _body_fields(body_schema, components),
+            "components": _component_subset(body_schema, components),
         },
     }
 
@@ -684,9 +835,10 @@ async def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict[st
             method = str(args.get("method") or "GET").upper()
             path = str(args.get("path") or "").strip()
             body = args.get("body")
+            query = args.get("query") if isinstance(args.get("query"), dict) else (args.get("params") if isinstance(args.get("params"), dict) else None)
             if method not in {"GET", "POST", "PATCH", "PUT", "DELETE"}:
                 return {"ok": False, "error": "Unsupported HTTP method"}
-            return await _request(service, method, path, body)
+            return await _request(service, method, path, body, params=query)
         if name == "diagnose":
             return await _diagnose()
         if name == "opencode_prompt":

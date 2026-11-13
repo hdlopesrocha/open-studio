@@ -171,6 +171,22 @@ def test_diagnose_treats_running_admin_services_as_online(monkeypatch):
     assert result["data"]["offline_services"] == []
 
 
+def test_api_spec_catalog_and_describe_expose_request_fields(): 
+    import asyncio
+    from services.chat import tools
+
+    catalog = asyncio.run(tools.execute_tool("api_catalog", {"service": "music"}))
+    assert catalog["ok"] is True
+    create = next(item for item in catalog["data"]["endpoints"] if item["method"] == "POST" and item["path"] == "/api/music/projects")
+    assert "title" in create["body_fields"]
+
+    described = asyncio.run(tools.execute_tool("api_describe", {"service": "music", "method": "POST", "path": "/api/music/projects"}))
+    assert described["ok"] is True
+    assert described["data"]["body_fields"] == ["artist", "color", "description", "title"]
+    assert described["data"]["request_example"]["title"] == "string"
+    assert "ProjectCreate" in described["data"]["components"]
+
+
 def test_agent_builds_copy_ready_opencode_prompt():
     from services.chat.tools import build_opencode_prompt
 

@@ -249,8 +249,11 @@ reference for every external `/api/...` endpoint, covering Audio (songwriting,
 DJ, SRT), Video/QVAC, Documents (PDF, translation, summary), Voice, Images,
 FFmpeg, yt-dlp, Files, Jobs, Settings, models and per-page service requirements.
 The complete endpoint index is exposed at `GET /api/chat/context` and through
-`api_catalog`; ordinary prompts use a compact app core so local models stay
-responsive. Tool/command execution uses **Qwen3 4B** (`CHAT_AGENT_MODEL`) with a
+`api_catalog`. A generated OpenAPI snapshot provides `api_describe` with real
+parameters, request-body fields, examples and component schemas, so the agent can
+construct valid REST calls instead of guessing. `api_request` handles the
+internal authentication header and supports JSON bodies plus query parameters.
+Ordinary prompts use a compact app core so local models stay responsive. Tool/command execution uses **Qwen3 4B** (`CHAT_AGENT_MODEL`) with a
 compact tool protocol, while the selected session model remains available for
 ordinary conversation. Set `OLLAMA_CONTEXT_LENGTH` (default 32768) for the full
 context window.
@@ -1309,7 +1312,7 @@ make verify        # against a running stack (set OPENSTUDIO_PASSWORD)
 make screenshots   # demo build + headless Chrome capture
 ```
 
-Backend tests currently cover 88 cases across shared path safety, chat
+Backend tests currently cover 89 cases across shared path safety, chat
 sessions/messages with a mocked LLM, password/session/API-key security, job
 persistence, the service-manager dependency planner, music project/song/lyrics
 CRUD, lyric SRT timing/export, PDF extraction (real generated PDF), SRT/VTT/ASS
