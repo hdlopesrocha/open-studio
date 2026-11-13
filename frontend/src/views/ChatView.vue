@@ -448,20 +448,6 @@ onMounted(async () => {
             <h3>{{ activeSession?.title || "New conversation" }}</h3>
             <p>{{ activeSession?.message_count ? `${activeSession.message_count} messages · ${relativeTime(activeSession.updated_at)}` : "Ask anything about your studio or local AI workflow." }}</p>
           </div>
-          <div class="row" style="gap: 7px">
-            <button
-              class="icon-btn"
-              :class="{ 'chat-favorite-active': isFavoriteModel }"
-              :title="isFavoriteModel ? 'Favorite model for new chats' : 'Set as favorite for new chats'"
-              :aria-label="isFavoriteModel ? 'Favorite model for new chats' : 'Set as favorite for new chats'"
-              @click="toggleFavoriteModel"
-            >
-              <Star :size="14" :fill="isFavoriteModel ? 'currentColor' : 'none'" />
-            </button>
-            <select v-model="model" class="select input-sm" style="max-width: 190px" title="Model">
-              <option v-for="item in models" :key="item.id" :value="item.id">{{ item.name || item.id }}</option>
-            </select>
-          </div>
         </div>
 
         <ServiceNotice :services="[{ name: 'llm', label: 'LLM Bridge + Ollama' }]" title="Chat needs the local LLM" />
@@ -560,8 +546,21 @@ onMounted(async () => {
 
           <textarea ref="composer" v-model="draft" class="textarea" rows="3" :disabled="!llmOnline" placeholder="Message your local model…  Shift+Enter for a new line" @keydown="onComposerKeydown" />
           <div class="row-between" style="margin-top: 8px">
-            <span class="row small muted" style="gap: 7px"><Sparkles :size="11" /> {{ model }} · local session context
+            <span class="row small muted chat-composer-tools" style="gap: 7px">
+              <button
+                class="icon-btn"
+                :class="{ 'chat-favorite-active': isFavoriteModel }"
+                :title="isFavoriteModel ? 'Favorite model for new chats' : 'Set as favorite for new chats'"
+                :aria-label="isFavoriteModel ? 'Favorite model for new chats' : 'Set as favorite for new chats'"
+                @click="toggleFavoriteModel"
+              >
+                <Star :size="14" :fill="isFavoriteModel ? 'currentColor' : 'none'" />
+              </button>
+              <select v-model="model" class="select input-sm chat-model-select" title="Model">
+                <option v-for="item in models" :key="item.id" :value="item.id">{{ item.name || item.id }}</option>
+              </select>
               <button class="icon-btn" title="Attach or choose a shared file" :disabled="attachments.length >= 8" @click="attachmentPickerOpen = true"><Paperclip :size="13" /></button>
+              <span class="chat-local-context"><Sparkles :size="11" /> local session context</span>
             </span>
             <button class="btn btn-primary" :disabled="sending || !draft.trim() || !llmOnline" @click="send"><Loader2 v-if="sending" :size="14" class="spin" /><Send v-else :size="14" /> Send</button>
           </div>
@@ -587,6 +586,9 @@ onMounted(async () => {
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .chat-main-head { flex: 0 0 auto; }
 .chat-favorite-active { color: #fbbf24; }
+.chat-composer-tools { align-items: center; min-width: 0; flex-wrap: wrap; }
+.chat-model-select { max-width: 190px; }
+.chat-local-context { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .chat-error { margin: 10px 14px 0; display: flex; gap: 8px; align-items: center; }
 .chat-transcript { flex: 1 1 auto; overflow: auto; padding: 18px 20px; min-height: 300px; max-height: 58vh; }
 .chat-message { display: flex; align-items: flex-start; gap: 10px; margin: 0 auto 16px; max-width: 900px; }
