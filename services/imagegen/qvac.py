@@ -25,8 +25,13 @@ TIMEOUT = max(30.0, float(env("QVAC_IMAGE_TIMEOUT", "1200")))
 # imagegen-to-QVAC submissions serialized inside this process and retry the
 # registry's transient concurrency-policy rejection.
 _QVAC_LOCK = asyncio.Lock()
-_CONCURRENCY_ATTEMPTS = max(1, int(env("QVAC_CONCURRENCY_RETRIES", "12")))
+_CONCURRENCY_ATTEMPTS = max(1, int(env("QVAC_CONCURRENCY_RETRIES", "4")))
 _QUEUE_WAIT_SECONDS = max(30.0, float(env("QVAC_QUEUE_WAIT_SECONDS", "1200")))
+_RETRY_IDLE_SECONDS = max(5.0, float(env("QVAC_RETRY_IDLE_SECONDS", "60")))
+_REJECTION_CIRCUIT_THRESHOLD = max(1, int(env("QVAC_REJECTION_CIRCUIT_THRESHOLD", "3")))
+_REJECTION_COOLDOWN_SECONDS = max(1.0, float(env("QVAC_REJECTION_COOLDOWN_SECONDS", "120")))
+_CONSECUTIVE_REJECTIONS = 0
+_REJECTION_COOLDOWN_UNTIL = 0.0
 _TERMINAL_OK = {"completed", "complete", "succeeded", "success", "done", "finished"}
 _TERMINAL_FAIL = {"failed", "error", "cancelled", "canceled", "interrupted", "timeout"}
 _CONTAINER_KEYS = ("images", "files", "outputs", "output", "result", "data", "items", "artifacts", "saved_files")
@@ -305,19 +310,54 @@ def _is_concurrency_rejection(exc: Exception) -> bool:
     return "another diffusion request is already running" in text or "concurrency policy" in text or "request_rejected_by_policy" in text
 
 
-async def _wait_for_qvac_idle() -> bool:
-    """Wait until no QVAC job is running before submitting another image."""
-    deadline = time.monotonic() + _QUEUE_WAIT_SECONDS
-    async with httpx.AsyncClient(timeout=10.0, headers=jobhub_headers()) as client:
-        while time.monotonic() < deadline:
-            try:
-                response = await client.get(f"{JOBHUB_URL}/api/jobs?component=qvac&status=running")
-                if response.status_code < 400 and not (response.json().get("items") or []):
-                    return True
-            except (httpx.HTTPError, ValueError):
-                pass
+async def _jobhub_qvac_idle(client: httpx.AsyncClient) -> bool:
+    """Return whether jobhub has any running or canceling QVAC job."""
+    try:
+        response = await client.get(
+            f"{JOBHUB_URL}/api/jobs",
+            params={"component": "qvac", "status": "running,canceling"},
+        )
+        if response.status_code >= 400:
+            return False
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return False
+    return not (isinstance(payload, dict) and (payload.get("items") or []))
+
+
+async def _qvac_runtime_idle(client: httpx.AsyncClient) -> bool | None:
+    """Return QVAC's active-job state, or None when it cannot be determined."""
+    try:
+        response = await client.get(f"{QVAC_URL}/api/qvac/status")
+    except httpx.HTTPError:
+        return None
+    if response.status_code >= 400:
+        return None
+    try:
+        active = response.json().get("active_jobs")
+    except (AttributeError, ValueError):
+        return None
+    if not isinstance(active, list):
+        return None
+    return not active
+
+
+async def _wait_for_qvac_idle(timeout: float | None = None) -> bool:
+    """Wait until both jobhub and QVAC report that diffusion is idle."""
+    deadline = time.monotonic() + (_QUEUE_WAIT_SECONDS if timeout is None else timeout)
+    headers = {**jobhub_headers(), "X-Internal-Token": INTERNAL_TOKEN}
+    async with httpx.AsyncClient(timeout=10.0, headers=headers) as client:
+        while True:
+            hub_idle = await _jobhub_qvac_idle(client)
+            runtime_idle = await _qvac_runtime_idle(client)
+            # If the QVAC status endpoint is unavailable, let the actual
+            # submission report the real connection error instead of waiting
+            # for the full queue timeout.
+            if hub_idle and runtime_idle is not False:
+                return True
+            if time.monotonic() >= deadline:
+                return False
             await asyncio.sleep(3.0)
-    return False
 
 
 async def generate(
@@ -326,19 +366,49 @@ async def generate(
     on_poll: Callable[[str, float], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Serialize QVAC diffusion and retry registry-policy rejections."""
+    global _CONSECUTIVE_REJECTIONS, _REJECTION_COOLDOWN_UNTIL
+
     last_error: Exception | None = None
     async with _QVAC_LOCK:
+        cooldown_remaining = _REJECTION_COOLDOWN_UNTIL - time.monotonic()
+        if cooldown_remaining > 0:
+            raise QVACError(
+                f"QVAC diffusion is cooling down after repeated concurrency rejections "
+                f"({cooldown_remaining:.0f}s remaining). Restart QVAC if this persists."
+            )
         if not await _wait_for_qvac_idle():
             raise QVACError("QVAC is still busy with another diffusion job; no slot became available in time")
         for attempt in range(_CONCURRENCY_ATTEMPTS):
             try:
-                return await _generate_locked(params, on_poll=on_poll)
+                result = await _generate_locked(params, on_poll=on_poll)
+                _CONSECUTIVE_REJECTIONS = 0
+                return result
             except QVACError as exc:
                 last_error = exc
-                if not _is_concurrency_rejection(exc) or attempt >= _CONCURRENCY_ATTEMPTS - 1:
+                if not _is_concurrency_rejection(exc):
                     raise
+                _CONSECUTIVE_REJECTIONS += 1
+                if _CONSECUTIVE_REJECTIONS >= _REJECTION_CIRCUIT_THRESHOLD:
+                    _CONSECUTIVE_REJECTIONS = 0
+                    _REJECTION_COOLDOWN_UNTIL = time.monotonic() + _REJECTION_COOLDOWN_SECONDS
+                    raise QVACError(
+                        "QVAC rejected diffusion repeatedly because its model slot is stuck. "
+                        "The provider is cooling down; restart QVAC before retrying."
+                    ) from exc
+                if attempt >= _CONCURRENCY_ATTEMPTS - 1:
+                    raise
+                if not await _wait_for_qvac_idle(_RETRY_IDLE_SECONDS):
+                    raise QVACError(
+                        "QVAC rejected diffusion and its slot did not become idle. "
+                        "Restart QVAC before retrying."
+                    ) from exc
                 delay = min(20.0, 2.0 + attempt * 2.0)
-                log.warning("QVAC concurrency rejection; retrying in %.1fs (%s/%s)", delay, attempt + 1, _CONCURRENCY_ATTEMPTS)
+                log.warning(
+                    "QVAC concurrency rejection; retrying in %.1fs (%s/%s)",
+                    delay,
+                    attempt + 1,
+                    _CONCURRENCY_ATTEMPTS,
+                )
                 await asyncio.sleep(delay)
     raise last_error or QVACError("QVAC image generation failed")
 
