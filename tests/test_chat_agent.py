@@ -149,6 +149,28 @@ def test_auto_repair_reads_logs_restarts_and_retries(monkeypatch):
     assert any(path.endswith("/logs?lines=80") for _, path in calls)
 
 
+def test_diagnose_treats_running_admin_services_as_online(monkeypatch):
+    import asyncio
+    from services.chat import tools
+
+    async def fake_request(service, method, path, body=None, **kwargs):
+        if path == "/api/admin/services":
+            return {"ok": True, "data": {"items": [
+                {"name": "admin", "enabled": True, "running": True, "health": "healthy"},
+                {"name": "translation", "enabled": True, "running": True, "health": "healthy"},
+                {"name": "music-engine", "enabled": False, "running": False, "health": "stopped"},
+            ]}}
+        if path == "/api/admin/models":
+            return {"ok": True, "data": {"items": []}}
+        if path.startswith("/api/jobs"):
+            return {"ok": True, "data": {"items": [], "total": 0}}
+        return {"ok": False, "error": "unexpected"}
+
+    monkeypatch.setattr(tools, "_request", fake_request)
+    result = asyncio.run(tools._diagnose())
+    assert result["data"]["offline_services"] == []
+
+
 def test_agent_builds_copy_ready_opencode_prompt():
     from services.chat.tools import build_opencode_prompt
 

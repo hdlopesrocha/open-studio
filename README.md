@@ -1309,7 +1309,7 @@ make verify        # against a running stack (set OPENSTUDIO_PASSWORD)
 make screenshots   # demo build + headless Chrome capture
 ```
 
-Backend tests currently cover 87 cases across shared path safety, chat
+Backend tests currently cover 88 cases across shared path safety, chat
 sessions/messages with a mocked LLM, password/session/API-key security, job
 persistence, the service-manager dependency planner, music project/song/lyrics
 CRUD, lyric SRT timing/export, PDF extraction (real generated PDF), SRT/VTT/ASS

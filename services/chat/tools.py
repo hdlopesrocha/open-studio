@@ -561,6 +561,14 @@ async def repair_tool_failure(action: dict[str, Any], result: dict[str, Any]) ->
     return retry
 
 
+def _service_online(item: dict[str, Any]) -> bool:
+    if "online" in item:
+        return bool(item.get("online"))
+    if "running" in item:
+        return bool(item.get("running"))
+    return str(item.get("state") or "").lower() in {"running", "healthy"} or str(item.get("health") or "").lower() == "healthy"
+
+
 async def _diagnose() -> dict[str, Any]:
     services = await _request("admin", "GET", "/api/admin/services")
     models = await _request("admin", "GET", "/api/admin/models")
@@ -568,7 +576,7 @@ async def _diagnose() -> dict[str, Any]:
     offline: list[str] = []
     if services.get("ok"):
         for item in services.get("data", {}).get("items", []):
-            if item.get("enabled") and not item.get("online"):
+            if item.get("enabled") and not _service_online(item):
                 offline.append(str(item.get("name")))
     logs: dict[str, Any] = {}
     for name in offline[:3]:
