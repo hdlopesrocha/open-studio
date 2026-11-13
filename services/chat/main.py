@@ -19,8 +19,8 @@ from pydantic import BaseModel, Field
 
 from openstudio_common import INTERNAL_TOKEN, STATE_ROOT, create_service_app, env, service_url, utc_now
 
-from .context import APP_CONTEXT
-from .tools import TOOL_GUIDE, TOOL_NAMES, attachment_context, execute_tool, repair_tool_failure
+from .context import APP_CONTEXT, APP_CORE
+from .tools import AGENT_TOOL_GUIDE, TOOL_GUIDE, TOOL_NAMES, attachment_context, execute_tool, repair_tool_failure
 
 log = logging.getLogger("chat")
 
@@ -32,7 +32,7 @@ DEFAULT_SYSTEM_PROMPT = env(
     "CHAT_SYSTEM_PROMPT",
     "You are Open Studio's local AI assistant. Be clear, practical and concise. "
     "Use the application context below to help the user navigate and operate this studio.",
-).strip() + "\n\n" + APP_CONTEXT
+).strip() + "\n\n" + APP_CORE
 CONTEXT_MESSAGES = int(env("CHAT_CONTEXT_MESSAGES", "40"))
 CONTEXT_CHARS = int(env("CHAT_CONTEXT_CHARS", "24000"))
 AGENT_STEPS = int(env("CHAT_AGENT_STEPS", "4"))
@@ -40,6 +40,11 @@ AGENT_TOOL_CALLS = int(env("CHAT_AGENT_TOOL_CALLS", "8"))
 AGENT_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TIMEOUT_SECONDS", "120"))
 AGENT_LLM_TIMEOUT_SECONDS = float(env("CHAT_AGENT_LLM_TIMEOUT_SECONDS", "45"))
 AGENT_TOOL_TIMEOUT_SECONDS = float(env("CHAT_AGENT_TOOL_TIMEOUT_SECONDS", "90"))
+AGENT_CORE = (
+    "Open Studio is a local creative suite. You execute user tasks through tools. "
+    "Use api_catalog for exact API paths and api_describe for request schemas. "
+    "Never claim success without a successful tool result. /no_think"
+)
 DB_PATH = Path(env("CHAT_DB_PATH", str(STATE_ROOT / "chat.db")))
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -327,8 +332,10 @@ async def _call_llm(session: dict[str, Any], messages: list[dict[str, Any]], pay
 def _context(session: dict[str, Any], history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     system_prompt = str(session.get("system_prompt") or "").strip()
-    if "COMPLETE EXTERNAL API REFERENCE" not in system_prompt:
-        system_prompt = (system_prompt + "\n\n" + APP_CONTEXT).strip()
+    if "COMPLETE EXTERNAL API REFERENCE" in system_prompt:
+        system_prompt = system_prompt.split("COMPLETE EXTERNAL API REFERENCE", 1)[0].strip()
+    if "OPEN STUDIO OVERVIEW" not in system_prompt:
+        system_prompt = (system_prompt + "\n\n" + APP_CORE).strip()
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     selected = history[-CONTEXT_MESSAGES:]
@@ -435,7 +442,7 @@ def _query_actions(message: str) -> list[dict[str, Any]]:
 def _explicit_tool_actions(message: str) -> list[dict[str, Any]]:
     text = message.lower()
     actions: list[dict[str, Any]] = []
-    if re.search(r"\bapi[\s_-]?catalog\b", text):
+    if re.search(r"\bapi[\s_-]?catalog\b|\b(endpoints?|rest api|openapi)\b", text):
         service = ""
         for alias, name in sorted(SERVICE_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
             if alias in text:
@@ -797,7 +804,7 @@ async def _final_answer(messages: list[dict[str, Any]], model: str, results: lis
             [
                 {
                     "role": "system",
-                    "content": "You are Open Studio's execution assistant. Answer only from the verified tool results. Do not call tools, invent statuses or mention unrelated tasks. Be concise and factual.",
+                    "content": "You are Open Studio's execution assistant. Answer only from the verified tool results. Do not call tools, invent statuses or mention unrelated tasks. Be concise and factual. /no_think",
                 },
                 {
                     "role": "user",
@@ -865,14 +872,11 @@ async def _run_agent(session: dict[str, Any], message: str, attachments: list[st
     history = STORE.list_messages(str(session.get("id") or ""))
     prior = history[:-1] if history and history[-1].get("role") == "user" else history
     messages = _context(session, prior)
+    agent_system = AGENT_CORE + "\n\n" + AGENT_TOOL_GUIDE + "\n\n" + protocol
     if messages and messages[0].get("role") == "system":
-        system_content = str(messages[0].get("content") or "")
-        # Keep the full API reference in normal chat, but give the command agent a
-        # compact prompt; it can discover exact endpoints through api_catalog.
-        base = system_content.split("COMPLETE EXTERNAL API REFERENCE", 1)[0].strip() or APP_CONTEXT
-        messages[0]["content"] = base + "\n\n" + TOOL_GUIDE + "\n\n" + protocol + "\n\nUse api_catalog to discover exact API endpoints; do not invent paths. /no_think"
+        messages[0]["content"] = agent_system
     else:
-        messages.insert(0, {"role": "system", "content": APP_CONTEXT + "\n\n" + TOOL_GUIDE + "\n\n" + protocol + "\n\nUse api_catalog to discover exact API endpoints; do not invent paths. /no_think"})
+        messages.insert(0, {"role": "system", "content": agent_system})
     messages.append({"role": "user", "content": message + ("\n\n" + attachment_context(attachments) if attachments else "")})
     if initial_actions and results:
         messages.append({"role": "assistant", "content": json.dumps({"thought": "Initial deterministic actions", "actions": initial_actions, "final": None})})

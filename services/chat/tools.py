@@ -115,6 +115,32 @@ Useful workflow:
 3. Report the job id, status, artifacts and the page where the user can inspect it.
 Never disable core services or delete files unless the user explicitly asks.
 """
+AGENT_TOOL_GUIDE = """
+You are Open Studio's execution agent. Use tools, inspect results, and continue
+until the task is complete. Return only the JSON decision format requested by the
+system. Never invent a tool result.
+
+Tools and arguments:
+- navigate(path)
+- list_services(); service_action(name, action=enable|disable|restart|build); service_logs(name, lines)
+- list_models(); model_install(model_id); recheck_model(model_id)
+- list_jobs(status?); get_job(job_id); wait_for_job(job_id, timeout_seconds); job_action(job_id, action=cancel|retry); start_job(component, action, title, params)
+- list_files(path?); read_file(path); write_file(path, content)
+- api_catalog(service?); api_describe(service, path, method); api_request(service, method, path, body)
+- diagnose(); opencode_prompt(problem)
+- translate_text(text, source_language?, target_language?, model?)
+- summarize_text(text, length?, language?)
+- synthesize_speech(text, engine?, voice_id?, language?)
+- transcribe_audio(audio_path)
+- generate_image(prompt, provider?, model?, width?, height?)
+- music_generate(title, caption, lyrics?, duration?, genre?, mood?)
+
+Use api_catalog before inventing a REST path. Use read-only tools for checks.
+If a tool fails, inspect the logs/repair result, retry or repair the service, then
+use opencode_prompt if code changes are needed. Only use navigate when the user
+explicitly asks to open/go to a page. Only write files when requested.
+"""
+
 TOOL_NAMES = {
     "navigate", "list_services", "service_action", "service_logs", "list_models",
     "model_install", "recheck_model", "list_jobs", "job_action", "get_job",

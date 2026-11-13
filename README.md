@@ -244,12 +244,16 @@ inside the container and builds into the host Docker daemon.
 
 ### Chat context
 
-The Chat system prompt includes a complete Open Studio operating guide and a
-generated reference for every external `/api/...` endpoint, covering Audio
-(songwriting, DJ, SRT), Video/QVAC, Documents (PDF, translation, summary),
-Voice, Images, FFmpeg, yt-dlp, Files, Jobs, Settings, models and per-page service
-requirements. Tool/command execution uses **Qwen3 4B** (`CHAT_AGENT_MODEL`),
-while the selected session model remains available for ordinary conversation.
+The Chat context includes a complete Open Studio operating guide and a generated
+reference for every external `/api/...` endpoint, covering Audio (songwriting,
+DJ, SRT), Video/QVAC, Documents (PDF, translation, summary), Voice, Images,
+FFmpeg, yt-dlp, Files, Jobs, Settings, models and per-page service requirements.
+The complete endpoint index is exposed at `GET /api/chat/context` and through
+`api_catalog`; ordinary prompts use a compact app core so local models stay
+responsive. Tool/command execution uses **Qwen3 4B** (`CHAT_AGENT_MODEL`) with a
+compact tool protocol, while the selected session model remains available for
+ordinary conversation. Set `OLLAMA_CONTEXT_LENGTH` (default 32768) for the full
+context window.
 
 The agent can attach uploaded shared files, call whitelisted REST APIs,
 enable/restart services, install/re-check models, inspect/retry jobs, read

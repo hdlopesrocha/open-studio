@@ -100,3 +100,11 @@ HOW TO ANSWER
 APP_CONTEXT = (APP_CONTEXT + "\n\nCOMPLETE EXTERNAL API REFERENCE\n"
                "These are the exact external endpoints. Use api_describe for request schemas, "
                "and api_request to execute them. Internal routes are excluded.\n" + API_REFERENCE).strip()
+
+APP_CORE = APP_CONTEXT.split("\n\nCOMPLETE EXTERNAL API REFERENCE", 1)[0].strip()
+APP_CORE += ("\n\nAPI SERVICE GROUPS\n"
+             "admin, chat, dj, docs, ffmpeg, files, gateway, imagegen, jobhub, llm, "
+             "music, pdf, srt, summary, translation, video, voice, ytdlp.\n"
+             "Call api_catalog with a service name for its exact endpoints, api_describe "
+             "for a request schema, and api_request to execute. The complete endpoint "
+             "index is also available at GET /api/chat/context.")
