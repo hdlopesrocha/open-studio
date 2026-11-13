@@ -18,7 +18,7 @@ import {
   Wrench,
   X,
 } from "lucide-vue-next";
-import { api, relativeTime } from "@/lib/api";
+import { api, fileUrl, relativeTime } from "@/lib/api";
 import { DEMO } from "@/lib/types";
 import type { FileInfo } from "@/lib/types";
 import { useSystemStore } from "@/stores/system";
@@ -63,6 +63,7 @@ const loading = ref(false);
 const sending = ref(false);
 const error = ref("");
 const copiedId = ref("");
+const failedImages = ref<Record<string, boolean>>({});
 const attachments = ref<Array<{ path: string; name: string; size?: number }>>([]);
 const attachmentPickerOpen = ref(false);
 const messageEnd = ref<HTMLElement | null>(null);
@@ -194,6 +195,30 @@ async function deleteSession(session: ChatSession) {
 
 function attachmentName(path: string): string {
   return path.split("/").filter(Boolean).pop() || path;
+}
+
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "svg"]);
+
+function messageAttachments(message: ChatMessage): string[] {
+  const paths = message.metadata?.attachments;
+  return Array.isArray(paths) ? paths.filter((path): path is string => typeof path === "string" && Boolean(path)) : [];
+}
+
+function isImageAttachment(path: string): boolean {
+  const extension = path.split(".").pop()?.toLowerCase() || "";
+  return IMAGE_EXTENSIONS.has(extension) && !failedImages.value[path];
+}
+
+function imageAttachments(message: ChatMessage): string[] {
+  return messageAttachments(message).filter(isImageAttachment);
+}
+
+function fileAttachments(message: ChatMessage): string[] {
+  return messageAttachments(message).filter((path) => !isImageAttachment(path));
+}
+
+function markImageFailed(path: string): void {
+  failedImages.value = { ...failedImages.value, [path]: true };
 }
 
 async function revertMessage(message: ChatMessage, edit = false) {
@@ -416,6 +441,30 @@ onMounted(async () => {
             <div class="chat-avatar"><Bot v-if="message.role === 'assistant'" :size="15" /><UserRound v-else :size="15" /></div>
             <div class="chat-bubble-wrap">
               <div class="chat-bubble">{{ message.content }}</div>
+              <div v-if="messageAttachments(message).length" class="chat-message-attachments">
+                <a
+                  v-for="path in imageAttachments(message)"
+                  :key="`img-${path}`"
+                  class="chat-message-image"
+                  :href="fileUrl(path)"
+                  target="_blank"
+                  rel="noopener"
+                  :title="attachmentName(path)"
+                >
+                  <img :src="fileUrl(path)" :alt="attachmentName(path)" loading="lazy" @error="markImageFailed(path)" />
+                </a>
+                <a
+                  v-for="path in fileAttachments(message)"
+                  :key="`file-${path}`"
+                  class="chip clickable"
+                  :href="fileUrl(path)"
+                  target="_blank"
+                  rel="noopener"
+                  :title="path"
+                >
+                  <Paperclip :size="10" /> {{ attachmentName(path) }}
+                </a>
+              </div>
               <div v-if="message.metadata?.actions?.length" class="chat-agent-actions">
                 <template v-for="(action, actionIndex) in message.metadata.actions" :key="actionIndex">
                   <RouterLink v-if="action.tool === 'navigate' && action.data?.path" :to="action.data.path" class="chip clickable">
@@ -533,4 +582,9 @@ onMounted(async () => {
 <style scoped>
 .chat-attachments { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 7px; }
 .chat-agent-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
+.chat-message-attachments { display: flex; gap: 6px; flex-wrap: wrap; align-items: flex-start; margin-top: 7px; }
+.chat-message.user .chat-message-attachments { justify-content: flex-end; }
+.chat-message-image { display: block; width: 148px; height: 106px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel-2); }
+.chat-message-image img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform 150ms ease; }
+.chat-message-image:hover img { transform: scale(1.04); }
 </style>
