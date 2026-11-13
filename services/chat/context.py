@@ -26,8 +26,8 @@ OPEN STUDIO OVERVIEW
   explain which service to activate. Do not tell users to enable every service.
 
 PAGES AND CAPABILITIES
-- Chat: persistent sessions and conversations, model selector, local session
-  history, AI workspace presets, file attachments and an execution agent. The
+- Chat: persistent sessions and conversations, model selector with a persisted
+  favorite model for new chats, local session history, AI workspace presets, file attachments and an execution agent. The
   Chat service can call whitelisted application tools, start and inspect jobs,
   control services and models, inspect files/logs and use the REST APIs.
 - Audio (/music, shown as Audio in the navigation): ACE-Step song projects,

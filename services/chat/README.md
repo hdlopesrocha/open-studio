@@ -6,6 +6,7 @@ Persistent local ChatGPT-style sessions backed by the shared LLM bridge.
 
 - `GET /api/chat/health`
 - `GET /api/chat/models`
+- `GET|PUT /api/chat/preferences` — persisted favorite model for new sessions
 - `GET|POST /api/chat/sessions`
 - `GET|PATCH|DELETE /api/chat/sessions/{id}`
 - `GET /api/chat/sessions/{id}/messages`

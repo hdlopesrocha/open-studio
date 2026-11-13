@@ -108,6 +108,45 @@ def test_chat_llm_failure_and_missing_session(tmp_path, monkeypatch):
     assert missing.status_code == 404
 
 
+def test_chat_favorite_model_defaults_new_sessions(tmp_path, monkeypatch):
+    module = _load_chat(tmp_path, monkeypatch)
+    client = TestClient(module.app)
+    headers = _headers(module)
+
+    saved = client.put(
+        "/api/chat/preferences",
+        headers=headers,
+        json={"favorite_model": "qwen3:4b"},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["favorite_model"] == "qwen3:4b"
+    assert client.get("/api/chat/preferences", headers=headers).json()["favorite_model"] == "qwen3:4b"
+
+    first = client.post("/api/chat/sessions", headers=headers, json={"title": "First"})
+    assert first.status_code == 201
+    assert first.json()["model"] == "qwen3:4b"
+
+    explicit = client.post(
+        "/api/chat/sessions",
+        headers=headers,
+        json={"title": "Explicit", "model": "custom-model"},
+    )
+    assert explicit.status_code == 201
+    assert explicit.json()["model"] == "custom-model"
+
+    cleared = client.put(
+        "/api/chat/preferences",
+        headers=headers,
+        json={"favorite_model": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["favorite_model"] == ""
+
+    fallback = client.post("/api/chat/sessions", headers=headers, json={"title": "Fallback"})
+    assert fallback.status_code == 201
+    assert fallback.json()["model"] == module.DEFAULT_MODEL
+
+
 def test_chat_context_describes_open_studio(tmp_path, monkeypatch):
     module = _load_chat(tmp_path, monkeypatch)
     client = TestClient(module.app)

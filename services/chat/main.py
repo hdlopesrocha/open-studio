@@ -56,13 +56,17 @@ def _now() -> str:
 class SessionCreate(BaseModel):
     title: str = Field(default="New chat", max_length=160)
     system_prompt: str = Field(default=DEFAULT_SYSTEM_PROMPT, max_length=40000)
-    model: str = Field(default=DEFAULT_MODEL, max_length=200)
+    model: str | None = Field(default=None, max_length=200)
 
 
 class SessionUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=160)
     system_prompt: str | None = Field(default=None, max_length=40000)
     model: str | None = Field(default=None, max_length=200)
+
+
+class PreferencesUpdate(BaseModel):
+    favorite_model: str | None = Field(default=None, max_length=200)
 
 
 class MessageCreate(BaseModel):
@@ -101,6 +105,11 @@ class ChatStore:
             );
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session
                 ON messages(session_id, created_at);
+            CREATE TABLE IF NOT EXISTS preferences (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         self._conn.commit()
@@ -167,7 +176,7 @@ class ChatStore:
         now = _now()
         title = (payload.title or "New chat").strip() or "New chat"
         system_prompt = (payload.system_prompt or DEFAULT_SYSTEM_PROMPT).strip()
-        model = (payload.model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+        model = (payload.model or self.get_preference("favorite_model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
         with self._lock:
             self._conn.execute(
                 "INSERT INTO sessions(id,title,system_prompt,model,created_at,updated_at) VALUES(?,?,?,?,?,?)",
@@ -193,6 +202,26 @@ class ChatStore:
             )
             self._conn.commit()
         return self.get_session(session_id)
+
+    def get_preference(self, key: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM preferences WHERE key=?", (key,)).fetchone()
+            return str(row["value"]) if row and row["value"] else None
+
+    def set_preference(self, key: str, value: str | None) -> None:
+        with self._lock:
+            cleaned = str(value or "").strip()
+            if not cleaned:
+                self._conn.execute("DELETE FROM preferences WHERE key=?", (key,))
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO preferences(key, value, updated_at) VALUES(?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                    """,
+                    (key, cleaned, _now()),
+                )
+            self._conn.commit()
 
     def delete_session(self, session_id: str) -> bool:
         with self._lock:
@@ -954,7 +983,29 @@ async def chat_health() -> dict[str, Any]:
 @router.get("/models")
 async def chat_models() -> dict[str, Any]:
     data = await _llm_models()
-    return {**data, "default": data.get("default") or DEFAULT_MODEL}
+    favorite = STORE.get_preference("favorite_model") or ""
+    items = data.get("items") or []
+    if favorite and items and favorite not in {str(item.get("id") or "") for item in items if isinstance(item, dict)}:
+        # Keep a stale favorite stored, but do not make it the default for a
+        # model that is no longer installed.
+        favorite = ""
+    return {
+        **data,
+        "favorite": favorite,
+        "default": data.get("default") or DEFAULT_MODEL,
+    }
+
+
+@router.get("/preferences")
+async def chat_preferences() -> dict[str, Any]:
+    return {"favorite_model": STORE.get_preference("favorite_model") or ""}
+
+
+@router.put("/preferences")
+async def update_chat_preferences(payload: PreferencesUpdate) -> dict[str, Any]:
+    favorite = (payload.favorite_model or "").strip()
+    STORE.set_preference("favorite_model", favorite or None)
+    return {"favorite_model": favorite}
 
 
 @router.get("/sessions")

@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Send,
   Sparkles,
+  Star,
   Trash2,
   Undo2,
   UserRound,
@@ -58,6 +59,8 @@ const activeId = ref("");
 const draft = ref("");
 const query = ref("");
 const model = ref("llama3.2:3b");
+const defaultModel = ref("llama3.2:3b");
+const favoriteModel = ref("");
 const models = ref<Array<{ id: string; name?: string }>>([]);
 const loading = ref(false);
 const sending = ref(false);
@@ -93,9 +96,12 @@ const presets = [
 
 async function loadModels() {
   try {
-    const data = await api.get<{ items: Array<{ id: string; name?: string }>; default?: string }>("/chat/models");
+    const data = await api.get<{ items: Array<{ id: string; name?: string }>; default?: string; favorite?: string }>("/chat/models");
     models.value = data.items || [];
-    if (data.default) model.value = data.default;
+    defaultModel.value = data.default || model.value;
+    favoriteModel.value = data.favorite || "";
+    const favoriteAvailable = favoriteModel.value && (models.value.some((item) => item.id === favoriteModel.value) || !models.value.length);
+    model.value = favoriteAvailable ? favoriteModel.value : defaultModel.value;
     if (!models.value.length) models.value = [{ id: model.value }];
   } catch {
     models.value = [{ id: model.value }];
@@ -134,12 +140,35 @@ async function newSession() {
       toasts.info("Demo mode: conversations are local only.");
       return;
     }
-    const session = await api.post<ChatSession>("/chat/sessions", { title: "New chat", model: model.value });
+    const newModel = favoriteModel.value || defaultModel.value || model.value;
+    const session = await api.post<ChatSession>("/chat/sessions", { title: "New chat", model: newModel });
     sessions.value.unshift(session);
     await openSession(session.id);
     await nextTick();
   } catch (err: any) {
     error.value = err?.message || "Could not create a conversation.";
+  }
+}
+
+const isFavoriteModel = computed(() => Boolean(favoriteModel.value) && favoriteModel.value === model.value);
+
+function modelLabel(id: string): string {
+  return models.value.find((item) => item.id === id)?.name || id;
+}
+
+async function toggleFavoriteModel() {
+  if (DEMO) {
+    favoriteModel.value = isFavoriteModel.value ? "" : model.value;
+    toasts.success(favoriteModel.value ? `${modelLabel(favoriteModel.value)} will be used for new chats.` : "Favorite chat model cleared.");
+    return;
+  }
+  try {
+    const next = isFavoriteModel.value ? "" : model.value;
+    const data = await api.put<{ favorite_model: string }>("/chat/preferences", { favorite_model: next || null });
+    favoriteModel.value = data.favorite_model || "";
+    toasts.success(favoriteModel.value ? `${modelLabel(favoriteModel.value)} will be used for new chats.` : "Favorite chat model cleared.");
+  } catch (err: any) {
+    toasts.error(err?.message || "Could not save the favorite chat model.");
   }
 }
 
@@ -420,6 +449,15 @@ onMounted(async () => {
             <p>{{ activeSession?.message_count ? `${activeSession.message_count} messages · ${relativeTime(activeSession.updated_at)}` : "Ask anything about your studio or local AI workflow." }}</p>
           </div>
           <div class="row" style="gap: 7px">
+            <button
+              class="icon-btn"
+              :class="{ 'chat-favorite-active': isFavoriteModel }"
+              :title="isFavoriteModel ? 'Favorite model for new chats' : 'Set as favorite for new chats'"
+              :aria-label="isFavoriteModel ? 'Favorite model for new chats' : 'Set as favorite for new chats'"
+              @click="toggleFavoriteModel"
+            >
+              <Star :size="14" :fill="isFavoriteModel ? 'currentColor' : 'none'" />
+            </button>
             <select v-model="model" class="select input-sm" style="max-width: 190px" title="Model">
               <option v-for="item in models" :key="item.id" :value="item.id">{{ item.name || item.id }}</option>
             </select>
@@ -548,6 +586,7 @@ onMounted(async () => {
 .chat-session:hover .chat-delete, .chat-session.active .chat-delete { opacity: 1; }
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .chat-main-head { flex: 0 0 auto; }
+.chat-favorite-active { color: #fbbf24; }
 .chat-error { margin: 10px 14px 0; display: flex; gap: 8px; align-items: center; }
 .chat-transcript { flex: 1 1 auto; overflow: auto; padding: 18px 20px; min-height: 300px; max-height: 58vh; }
 .chat-message { display: flex; align-items: flex-start; gap: 10px; margin: 0 auto 16px; max-width: 900px; }
