@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -30,6 +31,7 @@ from openstudio_common import (
     JobContext,
     JobRunner,
     create_service_app,
+    human_size,
     jobhub_headers,
     utc_now,
 )
@@ -399,17 +401,89 @@ MODEL_ITEMS: list[dict[str, Any]] = [
         "service": "imagegen",
         "repo": "black-forest-labs/FLUX.1-schnell",
     },
-    {
-        "id": "qvac-sd21",
-        "label": "QVAC SD 2.1 1B Q4",
-        "group": "QVAC",
-        "description": "CPU-friendly QVAC image diffusion model used by Picture Studio.",
-        "size": "~2.1 GB",
-        "kind": "qvac",
-        "service": "qvac",
-        "source": os.getenv("QVAC_IMAGE_MODEL", "SD_V2_1_1B_Q4_0"),
-    },
 ]
+
+
+async def _qvac_catalog() -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=3.0, read=8.0, write=5.0, pool=3.0),
+            headers=jobhub_headers(),
+        ) as client:
+            response = await client.get(f"{QVAC_URL}/api/qvac/catalog")
+        if response.status_code >= 400:
+            return {}
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _qvac_model_items(catalog: dict[str, Any]) -> list[dict[str, Any]]:
+    """Turn QVAC's installable model families into Settings model packs."""
+    models = {
+        str(item.get("name") or ""): item
+        for item in catalog.get("models") or []
+        if isinstance(item, dict) and item.get("name")
+    }
+    items: list[dict[str, Any]] = []
+    families = catalog.get("model_families") if isinstance(catalog.get("model_families"), dict) else {}
+    for family_kind in ("video", "image"):
+        group = families.get(family_kind) if isinstance(families.get(family_kind), dict) else {}
+        for family, meta in group.items():
+            if not isinstance(meta, dict):
+                continue
+            install = meta.get("install") if isinstance(meta.get("install"), dict) else {}
+            required = [str(name) for name in install.get("models") or [] if str(name).strip()]
+            if not install.get("available") or not required:
+                continue
+            installed_assets = sum(1 for name in required if models.get(name, {}).get("installed"))
+            size_bytes = install.get("size_bytes")
+            kind = str(meta.get("kind") or family_kind)
+            label = str(meta.get("label") or family)
+            mode_text = " / ".join(str(mode) for mode in meta.get("modes") or [])
+            description = (
+                f"{label} pack used by QVAC {family_kind} generation."
+                if family_kind == "video"
+                else f"{label} pack used by QVAC {kind} generation."
+            )
+            if mode_text:
+                description += f" Supports {mode_text}."
+            slug = re.sub(r"[^a-z0-9]+", "-", family.lower()).strip("-")
+            items.append(
+                {
+                    "id": f"qvac-{slug}",
+                    "label": f"QVAC · {label}",
+                    "group": "QVAC",
+                    "description": description,
+                    "size": human_size(size_bytes) if size_bytes else "Varies by model",
+                    "kind": "qvac",
+                    "service": "qvac",
+                    "family": family,
+                    "family_kind": family_kind,
+                    "model_kind": kind,
+                    "models": required,
+                    "model_count": len(required),
+                    "installed": bool(install.get("installed")),
+                    "detail": f"{installed_assets}/{len(required)} assets installed",
+                }
+            )
+    items.sort(key=lambda item: (str(item.get("model_kind") or ""), str(item.get("label") or "")))
+    return items
+
+
+async def all_model_items() -> list[dict[str, Any]]:
+    return list(MODEL_ITEMS) + _qvac_model_items(await _qvac_catalog())
+
+
+async def find_model_item(model_id: str) -> dict[str, Any] | None:
+    static = next((entry for entry in MODEL_ITEMS if entry["id"] == model_id), None)
+    if static is not None:
+        return static
+    return next(
+        (entry for entry in _qvac_model_items(await _qvac_catalog()) if entry["id"] == model_id),
+        None,
+    )
 
 
 def compose_command() -> list[str]:
@@ -705,6 +779,32 @@ async def _qvac_installed(source: str) -> tuple[bool, str]:
         return False, f"QVAC is not reachable: {exc}"
 
 
+async def _qvac_family_status(family: str) -> tuple[bool, str]:
+    catalog = await _qvac_catalog()
+    families = catalog.get("model_families") if isinstance(catalog.get("model_families"), dict) else {}
+    for group in families.values():
+        if not isinstance(group, dict):
+            continue
+        meta = group.get(family) if isinstance(group.get(family), dict) else None
+        if meta is None:
+            continue
+        install = meta.get("install") if isinstance(meta.get("install"), dict) else {}
+        installed = bool(install.get("installed"))
+        models = [str(name) for name in install.get("models") or [] if str(name).strip()]
+        catalog_models = {
+            str(item.get("name") or ""): item
+            for item in catalog.get("models") or []
+            if isinstance(item, dict)
+        }
+        present = sum(1 for name in models if catalog_models.get(name, {}).get("installed"))
+        if installed:
+            return True, f"{present}/{len(models)} assets installed"
+        if not install.get("available"):
+            return False, "required QVAC assets are not available in this SDK build"
+        return False, f"{present}/{len(models)} assets installed"
+    return False, "QVAC model family is not available"
+
+
 def _acestep_pack_files(item: dict[str, Any]) -> set[str]:
     variant = str(item.get("variant") or "turbo")
     quant = str(item.get("quant") or "Q8_0")
@@ -767,7 +867,11 @@ async def model_status(item: dict[str, Any]) -> dict[str, Any]:
         installed = _hf_present(str(item.get("repo") or ""))
         detail = "installed" if installed else "not downloaded"
     elif kind == "qvac":
-        installed, detail = await _qvac_installed(str(item.get("source") or ""))
+        family = str(item.get("family") or "")
+        if family:
+            installed, detail = await _qvac_family_status(family)
+        else:
+            installed, detail = await _qvac_installed(str(item.get("source") or ""))
     return {**item, "installed": installed, "detail": detail}
 
 
@@ -814,7 +918,7 @@ async def _restart_music_engine(ctx: JobContext, lines: list[str]) -> None:
 
 async def _install_model(ctx: JobContext) -> dict[str, Any]:
     model_id = str(ctx.params.get("model_id") or "")
-    item = next((entry for entry in MODEL_ITEMS if entry["id"] == model_id), None)
+    item = await find_model_item(model_id)
     if item is None:
         raise ValueError("Unknown model pack")
     kind = str(item.get("kind") or "")
@@ -937,18 +1041,22 @@ async def _install_model(ctx: JobContext) -> dict[str, Any]:
         lines.extend(out)
         if code != 0:
             raise RuntimeError("\n".join(out[-30:]) or "Could not start QVAC")
-        await ctx.report(12.0, "Downloading model", "QVAC is loading and caching the model")
+        await ctx.report(12.0, "Downloading model", "QVAC is downloading the model pack")
+        body: dict[str, Any] = {"family": str(item.get("family") or "")}
+        if not body["family"]:
+            body = {"models": list(item.get("models") or [])}
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=20.0, read=24 * 3600, write=60.0, pool=20.0),
             headers=jobhub_headers(),
         ) as client:
-            response = await client.post(
-                f"{QVAC_URL}/api/qvac/models/load",
-                json={"modelSrc": str(item.get("source") or "")},
-            )
+            response = await client.post(f"{QVAC_URL}/api/qvac/models/install", json=body)
         if response.status_code >= 400:
             raise RuntimeError(f"QVAC rejected the model ({response.status_code}): {response.text[:800]}")
-        lines.append(f"QVAC loaded {item.get('source')}")
+        result = response.json()
+        lines.append(
+            f"QVAC installed {result.get('label') or result.get('family') or item.get('label')} "
+            f"({len(result.get('models') or [])} assets)"
+        )
 
     else:
         raise ValueError(f"Unsupported model kind: {kind}")
@@ -1055,7 +1163,8 @@ async def submit_model_job(item: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/models")
 async def list_models() -> dict[str, Any]:
-    items = await asyncio.gather(*(model_status(item) for item in MODEL_ITEMS))
+    catalog = await all_model_items()
+    items = await asyncio.gather(*(model_status(item) for item in catalog))
     groups = _model_groups(list(items))
     return {
         "items": list(items),
@@ -1068,7 +1177,7 @@ async def list_models() -> dict[str, Any]:
 
 @router.post("/models/{model_id}/install")
 async def install_model(model_id: str, force: bool = False) -> dict[str, Any]:
-    item = next((entry for entry in MODEL_ITEMS if entry["id"] == model_id), None)
+    item = await find_model_item(model_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Unknown model pack")
     status = await model_status(item)

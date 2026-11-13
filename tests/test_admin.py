@@ -60,9 +60,9 @@ def test_model_catalog_covers_every_model_family():
     ids = [item["id"] for item in items]
     assert len(ids) == len(set(ids))
     kinds = {item["kind"] for item in items}
-    assert {"ollama", "music", "whisper", "translation", "summary", "piper", "omnivoice", "diffusers", "qvac"} <= kinds
+    assert {"ollama", "music", "whisper", "translation", "summary", "piper", "omnivoice", "diffusers"} <= kinds
     groups = admin._model_groups(items)
-    assert {group["group"] for group in groups} >= {"Language", "Music", "Voice", "Subtitles", "Text", "Images", "QVAC"}
+    assert {group["group"] for group in groups} >= {"Language", "Music", "Voice", "Subtitles", "Text", "Images"}
     assert sum(len(group["items"]) for group in groups) == len(items)
     assert {"translation-opus", "translation-nllb", "summary-en", "summary-pt", "whisper-base", "whisper-medium"} <= set(ids)
     assert "llm-qwen3-4b-instruct" in set(ids)
@@ -74,6 +74,61 @@ def test_model_catalog_covers_every_model_family():
         "music-ace-step-turbo-continuous",
         "music-ace-step-xl-base",
     } <= set(ids)
+
+
+def test_qvac_model_packs_come_from_the_live_catalog():
+    catalog = {
+        "models": [
+            {"name": "WAN2_1_T2V_1_3B_FP16", "installed": True},
+            {"name": "UMT5_XXL_FP16", "installed": False},
+            {"name": "WAN_2_1_COMFYUI_REPACKAGED_VAE", "installed": False},
+            {"name": "REALESRGAN_X4PLUS", "installed": True},
+        ],
+        "model_families": {
+            "video": {
+                "wan2.1_t2v": {
+                    "label": "Wan 2.1 T2V",
+                    "kind": "video",
+                    "modes": ["txt2vid"],
+                    "install": {
+                        "available": True,
+                        "installed": False,
+                        "models": [
+                            "WAN2_1_T2V_1_3B_FP16",
+                            "UMT5_XXL_FP16",
+                            "WAN_2_1_COMFYUI_REPACKAGED_VAE",
+                        ],
+                        "size_bytes": 15_000_000_000,
+                    },
+                }
+            },
+            "image": {
+                "esrgan": {
+                    "label": "Real-ESRGAN",
+                    "kind": "upscale",
+                    "modes": ["upscale"],
+                    "install": {
+                        "available": True,
+                        "installed": True,
+                        "models": ["REALESRGAN_X4PLUS"],
+                        "size_bytes": 67_000_000,
+                    },
+                }
+            },
+        },
+    }
+    items = admin._qvac_model_items(catalog)
+    assert {item["id"] for item in items} == {"qvac-wan2-1-t2v", "qvac-esrgan"}
+    wan = next(item for item in items if item["family"] == "wan2.1_t2v")
+    assert wan["kind"] == "qvac"
+    assert wan["installed"] is False
+    assert wan["detail"] == "1/3 assets installed"
+    assert wan["size"] != "Varies by model"
+    esrgan = next(item for item in items if item["family"] == "esrgan")
+    assert esrgan["installed"] is True
+    assert esrgan["model_kind"] == "upscale"
+    groups = admin._model_groups(admin.MODEL_ITEMS + items)
+    assert "QVAC" in {group["group"] for group in groups}
 
 
 def test_ace_model_status_is_variant_specific(tmp_path, monkeypatch):
