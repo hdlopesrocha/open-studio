@@ -139,12 +139,87 @@ MODEL_ITEMS: list[dict[str, Any]] = [
     },
     {
         "id": "music-ace-step",
-        "label": "ACE-Step 1.5 GGUF set",
+        "label": "ACE-Step 1.5 Turbo (Q8_0)",
         "group": "Music",
-        "description": "DiT, 5Hz LM, Qwen text encoder and VAE for the music engine.",
-        "size": "~7.7 GB",
+        "description": "Fast 2B turbo checkpoint with the shared 5Hz LM, text encoder and VAE.",
+        "size": "~4.4 GB",
         "kind": "music",
         "service": "music-engine",
+        "variant": "turbo",
+        "quant": "Q8_0",
+        "lm_size": "0.6B",
+    },
+    {
+        "id": "music-ace-step-base",
+        "label": "ACE-Step 1.5 Base (Q8_0)",
+        "group": "Music",
+        "description": "2B base checkpoint for editing, completion and stem extraction. Uses 50 diffusion steps.",
+        "size": "~4.4 GB",
+        "kind": "music",
+        "service": "music-engine",
+        "variant": "base",
+        "quant": "Q8_0",
+        "lm_size": "0.6B",
+    },
+    {
+        "id": "music-ace-step-sft",
+        "label": "ACE-Step 1.5 SFT (Q8_0)",
+        "group": "Music",
+        "description": "Higher-fidelity 2B SFT checkpoint for final takes. Slower than turbo.",
+        "size": "~4.4 GB",
+        "kind": "music",
+        "service": "music-engine",
+        "variant": "sft",
+        "quant": "Q8_0",
+        "lm_size": "0.6B",
+    },
+    {
+        "id": "music-ace-step-turbo-shift1",
+        "label": "ACE-Step 1.5 Turbo · Shift 1",
+        "group": "Music",
+        "description": "Turbo variant with a lower timestep shift profile for alternate motion character.",
+        "size": "~4.4 GB",
+        "kind": "music",
+        "service": "music-engine",
+        "variant": "turbo-shift1",
+        "quant": "Q8_0",
+        "lm_size": "0.6B",
+    },
+    {
+        "id": "music-ace-step-turbo-shift3",
+        "label": "ACE-Step 1.5 Turbo · Shift 3",
+        "group": "Music",
+        "description": "Turbo variant with a higher timestep shift profile for alternate motion character.",
+        "size": "~4.4 GB",
+        "kind": "music",
+        "service": "music-engine",
+        "variant": "turbo-shift3",
+        "quant": "Q8_0",
+        "lm_size": "0.6B",
+    },
+    {
+        "id": "music-ace-step-turbo-continuous",
+        "label": "ACE-Step 1.5 Turbo · Continuous",
+        "group": "Music",
+        "description": "Turbo checkpoint trained with a continuous noise schedule.",
+        "size": "~4.4 GB",
+        "kind": "music",
+        "service": "music-engine",
+        "variant": "turbo-continuous",
+        "quant": "Q8_0",
+        "lm_size": "0.6B",
+    },
+    {
+        "id": "music-ace-step-xl-base",
+        "label": "ACE-Step 1.5 XL Base (Q8_0)",
+        "group": "Music",
+        "description": "4B XL base checkpoint for the highest-quality editing workflow. Needs substantially more memory.",
+        "size": "~7.1 GB",
+        "kind": "music",
+        "service": "music-engine",
+        "variant": "xl-base",
+        "quant": "Q8_0",
+        "lm_size": "0.6B",
     },
     {
         "id": "whisper-large-v3",
@@ -620,6 +695,18 @@ async def _qvac_installed(source: str) -> tuple[bool, str]:
         return False, f"QVAC is not reachable: {exc}"
 
 
+def _acestep_pack_files(item: dict[str, Any]) -> set[str]:
+    variant = str(item.get("variant") or "turbo")
+    quant = str(item.get("quant") or "Q8_0")
+    lm_size = str(item.get("lm_size") or "0.6B")
+    return {
+        "vae-BF16.gguf",
+        "Qwen3-Embedding-0.6B-Q8_0.gguf",
+        f"acestep-5Hz-lm-{lm_size}-Q8_0.gguf",
+        f"acestep-v15-{variant}-{quant}.gguf",
+    }
+
+
 async def model_status(item: dict[str, Any]) -> dict[str, Any]:
     kind = str(item.get("kind") or "")
     installed = False
@@ -628,18 +715,18 @@ async def model_status(item: dict[str, Any]) -> dict[str, Any]:
         installed, detail = await _ollama_installed(str(item.get("model") or ""))
     elif kind == "music":
         directory = MODEL_ROOT / "acestep"
-        required = {
-            "vae-BF16.gguf",
-            "Qwen3-Embedding-0.6B-Q8_0.gguf",
-            "acestep-5Hz-lm-0.6B-Q8_0.gguf",
-            "acestep-v15-turbo-Q8_0.gguf",
-        }
+        required = _acestep_pack_files(item)
         try:
             present = {entry.name for entry in directory.glob("*.gguf")}
         except OSError:
             present = set()
         installed = required.issubset(present)
-        detail = f"{len(required & present)}/{len(required)} GGUF files present"
+        missing = sorted(required - present)
+        detail = (
+            f"{len(required & present)}/{len(required)} GGUF files present"
+            if not missing
+            else f"missing: {', '.join(missing)}"
+        )
     elif kind == "whisper":
         installed = _whisper_present(str(item.get("model") or "large-v3"))
         detail = "installed" if installed else "not downloaded"
@@ -686,6 +773,35 @@ async def _ensure_service_image(service: str, ctx: JobContext) -> None:
         raise RuntimeError("\n".join(lines[-30:]) or f"Could not build {service}")
 
 
+async def _music_engine_busy() -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers=jobhub_headers()) as client:
+            response = await client.get(
+                f"{JOBHUB_URL}/api/jobs",
+                params={"component": "music", "status": "running,queued", "limit": 1},
+            )
+        return response.status_code >= 400 or bool(response.json().get("items"))
+    except (httpx.HTTPError, ValueError):
+        # Do not restart the engine if we cannot prove it is idle.
+        return True
+
+
+async def _restart_music_engine(ctx: JobContext, lines: list[str]) -> None:
+    if await _music_engine_busy():
+        lines.append("ACE-Step model installed; engine restart skipped because a Music job is active.")
+        return
+    await ctx.report(95.0, "Reloading engine", "Restarting the ACE-Step engine to discover the new model")
+    code, out = await run_command(
+        [*compose_command(), "restart", "music-engine"],
+        ctx=ctx,
+        timeout=900,
+        stage_label="Reloading engine",
+    )
+    lines.extend(out)
+    if code != 0:
+        lines.append("ACE-Step model installed, but the engine restart failed; restart music-engine manually.")
+
+
 async def _install_model(ctx: JobContext) -> dict[str, Any]:
     model_id = str(ctx.params.get("model_id") or "")
     item = next((entry for entry in MODEL_ITEMS if entry["id"] == model_id), None)
@@ -713,12 +829,17 @@ async def _install_model(ctx: JobContext) -> dict[str, Any]:
         await _ensure_service_image("music-engine", ctx)
         command = [
             *compose_command(), "--profile", "services", "run", "--rm", "--no-deps",
+            "-e", "ACESTEP_CPP_DOWNLOAD_MODELS=true",
+            "-e", f"ACESTEP_CPP_DIT_VARIANT={item.get('variant') or 'turbo'}",
+            "-e", f"ACESTEP_CPP_QUANT={item.get('quant') or 'Q8_0'}",
+            "-e", f"ACESTEP_CPP_LM_SIZE={item.get('lm_size') or '0.6B'}",
             "--entrypoint", "/opt/acestep/download-models.sh", "music-engine",
         ]
         code, out = await run_command(command, ctx=ctx, timeout=12 * 3600, stage_label="Downloading model")
         lines.extend(out)
         if code != 0:
             raise RuntimeError("\n".join(out[-30:]) or "ACE-Step download failed")
+        await _restart_music_engine(ctx, lines)
 
     elif kind == "whisper":
         await _ensure_service_image("srt", ctx)

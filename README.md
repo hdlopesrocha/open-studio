@@ -332,7 +332,7 @@ pack. Each download is a normal job with progress, cancellation and retry in
 Jobs. The catalog covers:
 
 - Ollama LLMs
-- ACE-Step GGUF models
+- ACE-Step 1.5 Turbo, Base, SFT, XL Base, Turbo Shift 1/3 and Turbo Continuous GGUF packs
 - Whisper large-v3 and small
 - OPUS-MT/NLLB translation and T5 summaries
 - OmniVoice
@@ -1116,8 +1116,11 @@ See [`.env.example`](.env.example) for every option and comment.
 | QVAC | WAN 2.1/2.2, LTX-2, MiniMax-H3 | 4–25 GB per family | QVAC SD.cpp / Vulkan |
 
 Models are cached in `./data/models` and never re-downloaded unless removed.
-The Settings → Models page exposes each model pack as a job-backed install; it
-reports installed/partial state without re-downloading completed packs.
+The Settings → Models page exposes each ACE-Step variant and every other model
+pack as a job-backed install; it reports installed/partial state without
+re-downloading completed packs. ACE-Step packs share the same 5Hz LM, text
+encoder and VAE, so installing an additional DiT variant only downloads that
+checkpoint when the shared files are already present.
 `make models` is explicit; normal startup does not silently pull multi-gigabyte
 weights except ACE-Step's engine (controlled by `ACESTEP_DOWNLOAD_MODELS`).
 Optional service images are not built while their service is disabled; the

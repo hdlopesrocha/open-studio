@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from pathlib import Path
 
@@ -64,3 +65,30 @@ def test_model_catalog_covers_every_model_family():
     assert {group["group"] for group in groups} >= {"Language", "Music", "Voice", "Subtitles", "Text", "Images", "QVAC"}
     assert sum(len(group["items"]) for group in groups) == len(items)
     assert {"translation-opus", "translation-nllb", "summary-en", "summary-pt", "whisper-base", "whisper-medium"} <= set(ids)
+    assert {
+        "music-ace-step-base",
+        "music-ace-step-sft",
+        "music-ace-step-turbo-shift1",
+        "music-ace-step-turbo-shift3",
+        "music-ace-step-turbo-continuous",
+        "music-ace-step-xl-base",
+    } <= set(ids)
+
+
+def test_ace_model_status_is_variant_specific(tmp_path, monkeypatch):
+    monkeypatch.setattr(admin, "MODEL_ROOT", tmp_path)
+    directory = tmp_path / "acestep"
+    directory.mkdir()
+    shared = (
+        "vae-BF16.gguf",
+        "Qwen3-Embedding-0.6B-Q8_0.gguf",
+        "acestep-5Hz-lm-0.6B-Q8_0.gguf",
+    )
+    for name in (*shared, "acestep-v15-base-Q8_0.gguf"):
+        (directory / name).touch()
+    base = next(item for item in admin.MODEL_ITEMS if item["id"] == "music-ace-step-base")
+    turbo = next(item for item in admin.MODEL_ITEMS if item["id"] == "music-ace-step")
+    assert asyncio.run(admin.model_status(base))["installed"] is True
+    turbo_status = asyncio.run(admin.model_status(turbo))
+    assert turbo_status["installed"] is False
+    assert "acestep-v15-turbo-Q8_0.gguf" in turbo_status["detail"]

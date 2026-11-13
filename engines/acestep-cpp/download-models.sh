@@ -31,7 +31,15 @@ declare -A SHA256=(
     ["vae-BF16.gguf"]="0599862ac5d15cd308e1d2e368373aea6c02e25ebd1737ad4a4562a0901b0ef8"
     ["Qwen3-Embedding-0.6B-Q8_0.gguf"]="972f23255e46adfe744a0eb9a0039f3c63988f65753b0968d776e8b27168c321"
     ["acestep-5Hz-lm-0.6B-Q8_0.gguf"]="bdaf9e292d4470f31c19cafeaca1b74936a114667e3a85e5d33b65247e9908ec"
+    ["acestep-5Hz-lm-1.7B-Q8_0.gguf"]="726f99a82f050b32ebc5c5e36acaa9d7acd06bfe5e579a62b00e0d0d6d0b7ec6"
+    ["acestep-5Hz-lm-4B-Q8_0.gguf"]="972f91147a167f0c041f1b158d67985a82c0f6a852e68cdf70e46030cf08b1bc"
+    ["acestep-v15-base-Q8_0.gguf"]="10329f321010cedc3571c24b6371d002ce49238f48be47def4a1c76bf27ee150"
+    ["acestep-v15-sft-Q8_0.gguf"]="17f1984e48aaab27b3eb8ccbf0b754a6656e677884c60ea7003845cfc0059b70"
     ["acestep-v15-turbo-Q8_0.gguf"]="288f708a61cfc241013a98a62f98ba331f83fe34d0d3559acdd9b0f6a2f7cd6b"
+    ["acestep-v15-turbo-continuous-Q8_0.gguf"]="ed50670ad55ab53bd1c753529e3b6a8e58512e1c5f4df15426948c73fd407abf"
+    ["acestep-v15-turbo-shift1-Q8_0.gguf"]="3cc621a46b0d4906c0bce09c7b8d563bdc1aa39a4b4856271045bae12287027c"
+    ["acestep-v15-turbo-shift3-Q8_0.gguf"]="21cc9ec83378c71a28aef4a5c1bacab3fe5025e9de8f76487656b6f9de330d21"
+    ["acestep-v15-xl-base-Q8_0.gguf"]="45d05b88ccbfa0ea27208ea618d7f0749b2be040b457cfa661d37646ea39f207"
 )
 
 check_only=0
@@ -43,7 +51,7 @@ mkdir -p "${MODELS_DIR}"
 
 echo "[models] Directory: ${MODELS_DIR}"
 echo "[models] Preset: DiT=acestep-v15-${DIT_VARIANT}-${QUANT}, LM=${LM_SIZE}, text-encoder=Q8_0, VAE=BF16"
-echo "[models] A complete first run downloads several gigabytes (about 7.7 GB for the default Q8_0 set)."
+echo "[models] A complete first run downloads several gigabytes (about 4.4 GB for the default Q8_0 set)."
 
 missing=0
 for file in "${FILES[@]}"; do
