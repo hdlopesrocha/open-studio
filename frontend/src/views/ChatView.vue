@@ -243,6 +243,18 @@ async function deleteMessage(message: ChatMessage) {
   }
 }
 
+function askAgentToFix(detail: string) {
+  if (sending.value) return;
+  draft.value = `Diagnose and fix this Open Studio error if possible. Read the relevant service logs, repair or restart the affected service, retry the operation, and if it is a code bug write a ready-to-paste OpenCode prompt.\n\nError: ${detail}`;
+  error.value = "";
+  void send();
+}
+
+function askAgentToFixAction(action: any) {
+  const detail = action?.error || JSON.stringify(action?.data || action || {}).slice(0, 1200);
+  askAgentToFix(`The ${action?.tool || "tool"} action failed: ${detail}`);
+}
+
 function pickAttachment() {
   fileInput.value?.click();
 }
@@ -405,7 +417,8 @@ onMounted(async () => {
         <div v-if="error" class="alert error chat-error">
           <strong>The local model did not answer.</strong>
           <span>{{ error }}</span>
-          <RouterLink to="/settings" class="btn btn-sm" style="margin-left: auto">Open Settings</RouterLink>
+          <button class="btn btn-sm" style="margin-left: auto" @click="askAgentToFix(error)"><Wrench :size="12" /> Ask agent to fix</button>
+          <RouterLink to="/settings" class="btn btn-sm">Open Settings</RouterLink>
         </div>
 
         <div class="chat-transcript">
@@ -423,6 +436,7 @@ onMounted(async () => {
                     Copy OpenCode prompt
                   </button>
                   <span v-else class="chip" :class="action.ok ? 'success' : 'danger'">{{ action.tool }} {{ action.ok ? "done" : "failed" }}</span>
+                  <button v-if="!action.ok" class="chip clickable" @click="askAgentToFixAction(action)"><Wrench :size="10" /> Fix</button>
                 </template>
               </div>
               <div class="chat-message-actions">
