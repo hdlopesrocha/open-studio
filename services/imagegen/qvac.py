@@ -21,6 +21,11 @@ IMAGE_ENDPOINT = env("QVAC_IMAGE_ENDPOINT", "/api/qvac/image")
 DEFAULT_IMAGE_MODEL = env("QVAC_IMAGE_MODEL", "SD_V2_1_1B_Q4_0").strip()
 POLL_INTERVAL = max(0.5, float(env("QVAC_POLL_INTERVAL", "2.0")))
 TIMEOUT = max(30.0, float(env("QVAC_IMAGE_TIMEOUT", "1200")))
+# The QVAC registry permits one diffusion request per loaded model. Keep all
+# imagegen-to-QVAC submissions serialized inside this process and retry the
+# registry's transient concurrency-policy rejection.
+_QVAC_LOCK = asyncio.Lock()
+_CONCURRENCY_ATTEMPTS = max(1, int(env("QVAC_CONCURRENCY_RETRIES", "8")))
 _TERMINAL_OK = {"completed", "complete", "succeeded", "success", "done", "finished"}
 _TERMINAL_FAIL = {"failed", "error", "cancelled", "canceled", "interrupted", "timeout"}
 _CONTAINER_KEYS = ("images", "files", "outputs", "output", "result", "data", "items", "artifacts", "saved_files")
@@ -81,6 +86,19 @@ def _status(payload: Any) -> str:
     if isinstance(job, dict):
         return _status(job)
     return ""
+
+
+def _error_detail(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return str(payload)[:800]
+    for key in ("error", "message", "detail", "reason"):
+        value = payload.get(key)
+        if value:
+            return str(value)[:800]
+    job = payload.get("job")
+    if isinstance(job, dict):
+        return _error_detail(job)
+    return str(payload)[:800]
 
 
 def _extension(value: str) -> str:
@@ -155,7 +173,7 @@ async def _materialise(
     return None
 
 
-async def generate(
+async def _generate_locked(
     params: dict[str, Any],
     *,
     on_poll: Callable[[str, float], Awaitable[None]] | None = None,
@@ -230,7 +248,7 @@ async def generate(
                     if items and (not status or status in _TERMINAL_OK):
                         break
                     if status in _TERMINAL_FAIL:
-                        raise QVACError(f"QVAC job {job_id} failed with status {status}")
+                        raise QVACError(f"QVAC job {job_id} failed with status {status}: {_error_detail(data)}")
                     if items:
                         break
                 if items:
@@ -242,8 +260,8 @@ async def generate(
                 )
         if not items:
             if status in _TERMINAL_FAIL:
-                raise QVACError(f"QVAC job failed with status {status}")
-            raise QVACError("QVAC completed without returning an image")
+                raise QVACError(f"QVAC job failed with status {status}: {_error_detail(data)}")
+            raise QVACError(f"QVAC completed without returning an image: {_error_detail(data)}")
 
         images: list[dict[str, Any]] = []
         for item in items:
@@ -279,6 +297,32 @@ async def generate(
         },
         "warnings": warnings,
     }
+
+
+def _is_concurrency_rejection(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "another diffusion request is already running" in text or "concurrency policy" in text or "request_rejected_by_policy" in text
+
+
+async def generate(
+    params: dict[str, Any],
+    *,
+    on_poll: Callable[[str, float], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
+    """Serialize QVAC diffusion and retry registry-policy rejections."""
+    last_error: Exception | None = None
+    async with _QVAC_LOCK:
+        for attempt in range(_CONCURRENCY_ATTEMPTS):
+            try:
+                return await _generate_locked(params, on_poll=on_poll)
+            except QVACError as exc:
+                last_error = exc
+                if not _is_concurrency_rejection(exc) or attempt >= _CONCURRENCY_ATTEMPTS - 1:
+                    raise
+                delay = min(15.0, 2.0 + attempt * 2.0)
+                log.warning("QVAC concurrency rejection; retrying in %.1fs (%s/%s)", delay, attempt + 1, _CONCURRENCY_ATTEMPTS)
+                await asyncio.sleep(delay)
+    raise last_error or QVACError("QVAC image generation failed")
 
 
 async def status() -> dict[str, Any]:

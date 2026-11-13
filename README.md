@@ -56,7 +56,7 @@ Browser ──► Vue 3 app ──► Gateway (password, sessions, API keys)
 | **Summary** | Hierarchical T5 summaries in English/Portuguese, available as a tab inside Documents. |
 | **FFmpeg** | 20+ operations in its own image: transcode, extract audio, trim, crop video/image, scale, rotate, concat, overlay, burn subtitles, frames, GIF, merge/replace audio, speed, volume, loudnorm, thumbnails, split, raw argv. Probe, progress and cancellation. |
 | **yt-dlp** | Its own image and a full web UI/REST API: analyse formats, playlists, search, subtitles, thumbnails, metadata, audio extraction, cookies, SponsorBlock, rate limits, retries, proxies, archives and more. |
-| **QVAC** | Tether QVAC SDK in Docker: WAN 2.1/2.2, LTX-2 and MiniMax-H3 text-to-video and image-to-video, QVAC diffusion images, ESRGAN upscaling, model lifecycle, all SDK knobs, mock mode for hardware-free demos. |
+| **QVAC** | Tether QVAC SDK in Docker: WAN 2.1/2.2, LTX-2 and MiniMax-H3 text-to-video and image-to-video, QVAC diffusion images, ESRGAN upscaling, model lifecycle, all SDK knobs, mock mode for hardware-free demos. | Imagegen serializes QVAC diffusion calls and retries the registry concurrency rejection.
 | **Files** | Shared file explorer with folders, upload, rename, move, copy, delete, preview, ZIP, extract and search. Actions are in a bottom toolbar; text, audio, images and video preview inline. |
 | **Service manager** | Settings → Services enables/disables every optional service, builds images on demand, shows health, opens logs and can delete all shared files. |
 | **Style references** | Music Studio accepts reference songs for a named style; ACE-Step uses the reference audio + prompt guidance on the next generation. |
@@ -1318,7 +1318,7 @@ make verify        # against a running stack (set OPENSTUDIO_PASSWORD)
 make screenshots   # demo build + headless Chrome capture
 ```
 
-Backend tests currently cover 92 cases across shared path safety, chat
+Backend tests currently cover 94 cases across shared path safety, chat
 sessions/messages with a mocked LLM, password/session/API-key security, job
 persistence, the service-manager dependency planner, music project/song/lyrics
 CRUD, lyric SRT timing/export, PDF extraction (real generated PDF), SRT/VTT/ASS
